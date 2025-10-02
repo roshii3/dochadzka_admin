@@ -6,6 +6,16 @@ import pytz
 from supabase import create_client, Client
 from io import BytesIO
 
+# Skrytie hamburger menu a footeru
+hide_menu = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_menu, unsafe_allow_html=True)
+
 # ---------- CONFIG ----------
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
