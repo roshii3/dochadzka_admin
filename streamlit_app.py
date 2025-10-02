@@ -337,13 +337,23 @@ if bad_positions:
 else:
     st.info("Žiadne chybné zmeny dnes (pre túto pozíciu).")
 
+
 # --------- Export ----------
 st.header("Export dát")
 if st.button("Exportuj tento týždeň (Excel)"):
     if df_week.empty:
         st.warning("Žiadne dáta za tento týždeň.")
     else:
+        # odstránenie timezone zo všetkých datetime stĺpcov
+        for col in df_week.select_dtypes(include=["datetimetz"]):
+            df_week[col] = df_week[col].dt.tz_localize(None)
+
         xls = export_df_to_excel(df_week)
-        st.download_button("Stiahnuť XLSX", data=xls, file_name=f"dochadzka_{monday}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            "Stiahnuť XLSX", 
+            data=xls, 
+            file_name=f"dochadzka_{monday}.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # koniec
