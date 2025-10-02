@@ -6,6 +6,15 @@ import pytz
 from supabase import create_client, Client
 from io import BytesIO
 
+
+
+# ---------- CONFIG ----------
+DATABAZA_URL = st.secrets["DATABAZA_URL"]
+DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
+ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")  # nastav v secrets
+databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
+
+tz = pytz.timezone("Europe/Bratislava")
 # Skrytie hamburger menu a footeru
 hide_menu = """
     <style>
@@ -15,15 +24,6 @@ hide_menu = """
     </style>
 """
 st.markdown(hide_menu, unsafe_allow_html=True)
-
-# ---------- CONFIG ----------
-DATABAZA_URL = st.secrets["DATABAZA_URL"]
-DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
-ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")  # nastav v secrets
-databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
-
-tz = pytz.timezone("Europe/Bratislava")
-
 POSITIONS = ["Veliteľ","CCTV","Brány","Sklad2","Sklad3","Turniket2","Turniket3","Plombovac2","Plombovac3"]
 SHIFT_TIMES = {
     "ranna": (time(6, 0), time(14, 0)),
