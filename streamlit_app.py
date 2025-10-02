@@ -15,15 +15,7 @@ ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")  # nastav v secrets
 databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 
 tz = pytz.timezone("Europe/Bratislava")
-# Skrytie hamburger menu a footeru
-hide_menu = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-"""
-st.markdown(hide_menu, unsafe_allow_html=True)
+
 POSITIONS = ["Veliteľ","CCTV","Brány","Sklad2","Sklad3","Turniket2","Turniket3","Plombovac2","Plombovac3"]
 SHIFT_TIMES = {
     "ranna": (time(6, 0), time(14, 0)),
