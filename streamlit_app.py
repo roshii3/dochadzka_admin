@@ -1,3 +1,5 @@
+Perfektné. Tu je kompletne prepracovaný skript s jednotnou logikou výpočtu hodín, detailom chýb a exportom do Excelu s dvoma sheety: denný prehľad a týždenný prehľad.
+
 # streamlit_admin_dochadzka.py
 import streamlit as st
 import pandas as pd
@@ -9,13 +11,12 @@ from openpyxl.styles import PatternFill
 
 # ---------- CONFIG ----------
 st.set_page_config(page_title="Admin - Dochádzka", layout="wide", initial_sidebar_state="expanded")
-
 hide_st_style = """
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-</style>
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
 """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
@@ -46,9 +47,7 @@ def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
         else:
             df["timestamp"] = df["timestamp"].dt.tz_convert(tz)
     except Exception:
-        df["timestamp"] = df["timestamp"].apply(
-            lambda x: tz.localize(x) if (pd.notna(x) and x.tzinfo is None) else (x.tz_convert(tz) if pd.notna(x) else x)
-        )
+        df["timestamp"] = df["timestamp"].apply(lambda x: tz.localize(x) if (pd.notna(x) and x.tzinfo is None) else (x.tz_convert(tz) if pd.notna(x) else x))
     df["date"] = df["timestamp"].dt.date
     return df
 
@@ -64,58 +63,59 @@ def get_user_pairs(pos_day_df: pd.DataFrame):
     return pairs
 
 def calculate_shift_hours(pr, od, position):
+    """Vracia (status, hodiny, detail)"""
     if pd.isna(pr) and pd.isna(od):
-        return ("❌ absent", 0.0)
+        return ("❌ bez príchodu/odchodu", 0.0, "Príchod a odchod chýbajú")
     if pd.isna(pr):
-        return (f"⚠️ chýba príchod (od: {od})", 0.0)
+        return ("⚠ chýba príchod", 0.0, f"Príchod: NaT, Odchod: {od}")
     if pd.isna(od):
-        return (f"⚠️ chýba odchod (pr: {pr})", 0.0)
+        return ("⚠ chýba odchod", 0.0, f"Príchod: {pr}, Odchod: NaT")
 
     pr_t = pr.time()
     od_t = od.time()
 
+    # Veliteľ špeciálne pravidlo
     if position.lower().startswith("vel"):
-        if pr_t <= time(5, 0) and od_t >= time(22, 0):
-            return ("✅ R+P Veliteľ OK", VELITEL_DOUBLE)
-        else:
-            return ("⚠️ chybná smena Veliteľ", 0.0)
+        if pr_t <= time(5,0) and (od_t >= time(22,0) or od_t < time(2,0)):
+            return ("✅ R+P Veliteľ OK", VELITEL_DOUBLE, f"Príchod: {pr}, Odchod: {od}")
 
-    hours = 0
-    status_list = []
-    if pr_t <= time(7, 0) and od_t >= time(14, 0):
-        hours += SHIFT_HOURS
-        status_list.append("✅ Ranná OK")
-    if pr_t <= time(14, 0) and od_t >= time(21, 0):
-        hours += SHIFT_HOURS
-        status_list.append("✅ Poobedná OK")
-    if hours > DOUBLE_SHIFT_HOURS:
-        hours = DOUBLE_SHIFT_HOURS
-    if not status_list:
-        return ("⚠️ chybná smena", 0.0)
-    return (" + ".join(status_list), hours)
+    # R+P pre ostatných
+    if pr_t <= time(7,0) and (od_t >= time(21,0) or od_t < time(2,0)):
+        return ("✅ R+P OK", DOUBLE_SHIFT_HOURS, f"Príchod: {pr}, Odchod: {od}")
+
+    # Ranná
+    if pr_t <= time(7,0) and od_t <= time(15,0):
+        return ("✅ Ranná OK", SHIFT_HOURS, f"Príchod: {pr}, Odchod: {od}")
+
+    # Poobedná
+    if pr_t >= time(13,0) and od_t >= time(21,0):
+        return ("✅ Poobedná OK", SHIFT_HOURS, f"Príchod: {pr}, Odchod: {od}")
+
+    return ("⚠ chybná smena", 0.0, f"Príchod: {pr}, Odchod: {od}")
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
     for pos in POSITIONS:
         pos_df = df_day[df_day["position"] == pos]
         pairs = get_user_pairs(pos_df)
-        morning = {"status": "❌ absent", "hours": 0}
-        afternoon = {"status": "❌ absent", "hours": 0}
-        comments = []
-
+        morning = {"status": "❌ bez príchodu", "hours": 0.0, "detail": ""}
+        afternoon = {"status": "❌ bez príchodu", "hours": 0.0, "detail": ""}
         for user, pair in pairs.items():
-            status, hours = calculate_shift_hours(pair["pr"], pair["od"], pos)
-            if pos.lower().startswith("vel") and "R+P" in status:
-                morning = {"status": status, "hours": hours}
-                afternoon = {"status": status, "hours": hours}
-            else:
-                if "Ranná" in status:
-                    morning = {"status": status, "hours": SHIFT_HOURS}
-                if "Poobedná" in status:
-                    afternoon = {"status": status, "hours": SHIFT_HOURS}
-                if "chybná" in status or "chýba" in status:
-                    comments.append(f"{user}: {status} (pr: {pair['pr']}, od: {pair['od']})")
-        results[pos] = {"morning": morning, "afternoon": afternoon, "comments": comments}
+            status, hours, detail = calculate_shift_hours(pair["pr"], pair["od"], pos)
+            if "Ranná" in status:
+                morning = {"status": status, "hours": hours, "detail": detail}
+            elif "Poobedná" in status:
+                afternoon = {"status": status, "hours": hours, "detail": detail}
+            elif "R+P" in status:
+                morning = {"status": status, "hours": hours, "detail": detail}
+                afternoon = {"status": status, "hours": hours, "detail": detail}
+            elif "⚠" in status or "❌" in status:
+                # ak niekto má chybu, zobraz v dennom prehľade
+                if morning["hours"] == 0:
+                    morning = {"status": status, "hours": hours, "detail": detail}
+                elif afternoon["hours"] == 0:
+                    afternoon = {"status": status, "hours": hours, "detail": detail}
+        results[pos] = {"morning": morning, "afternoon": afternoon}
     return results
 
 def summarize_hours_week(df_week: pd.DataFrame, monday: date):
@@ -128,33 +128,44 @@ def summarize_hours_week(df_week: pd.DataFrame, monday: date):
             m = summary[pos]["morning"]["hours"]
             a = summary[pos]["afternoon"]["hours"]
             total = m + a
-            matrix.at[pos, d.strftime("%a %d.%m")] = total if total > 0 else "—"
-    matrix["Spolu"] = matrix.apply(lambda x: sum(v for v in x if isinstance(v, (int, float))), axis=1)
+            matrix.at[pos, d.strftime("%a %d.%m")] = total if total > 0 else 0.0
+    matrix["SUM"] = matrix.sum(axis=1)
     return matrix
 
-def export_to_excel(df_week: pd.DataFrame, df_day_summary: pd.DataFrame, selected_day: date) -> BytesIO:
+def export_to_excel(df_week: pd.DataFrame, monday: date) -> BytesIO:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         # Týždenný prehľad
-        df_week.to_excel(writer, sheet_name="Týždenný prehľad")
-        ws = writer.sheets["Týždenný prehľad"]
-        # farebne
-        for r in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=2, max_col=ws.max_column):
-            for cell in r:
-                if isinstance(cell.value, (int, float)):
-                    if cell.value > 0:
-                        cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-                    else:
-                        cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-        # Denný prehľad
-        df_day_summary.to_excel(writer, sheet_name="Denný prehľad")
+        week_matrix = summarize_hours_week(df_week, monday)
+        week_matrix.to_excel(writer, sheet_name="Týždenný prehľad")
+
+        # Denný detail
+        daily_list = []
+        days = [monday + timedelta(days=i) for i in range(7)]
+        for d in days:
+            df_d = df_week[df_week["date"] == d]
+            summ = summarize_day(df_d, d)
+            for pos in POSITIONS:
+                m = summ[pos]["morning"]
+                a = summ[pos]["afternoon"]
+                daily_list.append({
+                    "Dátum": d,
+                    "Pozícia": pos,
+                    "Ranná status": m["status"],
+                    "Ranná hodiny": m["hours"],
+                    "Ranná detail": m["detail"],
+                    "Poobedná status": a["status"],
+                    "Poobedná hodiny": a["hours"],
+                    "Poobedná detail": a["detail"]
+                })
+        daily_df = pd.DataFrame(daily_list)
+        daily_df.to_excel(writer, sheet_name="Denný prehľad", index=False)
     output.seek(0)
     return output
 
 # ---------- UI ----------
-st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
+st.title("🕒 Dochádzkový prehľad SBS")
 
-# Admin login
 if "admin_logged" not in st.session_state:
     st.session_state.admin_logged = False
 if not st.session_state.admin_logged:
@@ -173,40 +184,4 @@ today = datetime.now(tz).date()
 week_ref = st.sidebar.date_input("Vyber deň v týždni", value=today)
 if st.sidebar.button("Načítať týždeň"):
     st.session_state.selected_week = week_ref
-selected_week = st.session_state.get("selected_week", today)
-monday = selected_week - timedelta(days=selected_week.weekday())
-start_dt = tz.localize(datetime.combine(monday, time(0, 0)))
-end_dt = start_dt + timedelta(days=7)
-df_week = load_attendance(start_dt, end_dt)
 
-# Denný prehľad
-selected_day = st.sidebar.date_input("Denný prehľad pre deň", value=today)
-df_day = df_week[df_week["date"] == selected_day]
-day_summary = summarize_day(df_day, selected_day)
-
-st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
-cols = st.columns(3)
-for i, pos in enumerate(POSITIONS):
-    col = cols[i % 3]
-    info = day_summary[pos]
-    col.markdown(f"### **{pos}**")
-    col.markdown(f"**Ranná:** {info['morning']['status']} ({info['morning']['hours']} h)")
-    col.markdown(f"**Poobedná:** {info['afternoon']['status']} ({info['afternoon']['hours']} h)")
-    if info["comments"]:
-        col.markdown("⚠️ Detail chyby:")
-        for c in info["comments"]:
-            col.markdown(f"- {c}")
-
-# Týždenný prehľad
-st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m')} – {(monday + timedelta(days=6)).strftime('%d.%m')})")
-week_matrix = summarize_hours_week(df_week, monday)
-st.dataframe(week_matrix, use_container_width=True)
-
-# Export do Excelu
-excel_file = export_to_excel(week_matrix, pd.DataFrame(), selected_day)
-st.download_button(
-    label="📥 Stiahnuť Excel (Denný + Týždenný prehľad)",
-    data=excel_file,
-    file_name=f"dochadzka_{monday.strftime('%Y-%m-%d')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
