@@ -58,22 +58,27 @@ def classify_hours(pr, od):
     # kombinovaná ranná+poobedná
     return 15.25
 
+
 def summarize_position_day(pos_day_df: pd.DataFrame):
     morning, afternoon = None, None
     pairs = get_user_pairs(pos_day_df)
     for user, pair in pairs.items():
         pr, od = pair["pr"], pair["od"]
+
+        # ak je pr alebo od chýbajúci, pokračuj
+        if pd.isna(pr) or pd.isna(od):
+            continue
+
         h = classify_hours(pr, od)
-        pr_time = pr.strftime("%H:%M") if pd.notna(pr) else None
-        od_time = od.strftime("%H:%M") if pd.notna(od) else None
+        pr_time, od_time = pr.time(), od.time()
 
         if h == DOUBLE_SHIFT_HOURS:
             morning = {"prichod": pr, "odchod": od, "hours": h}
             afternoon = morning.copy()
             break
-        if pr_time and (pr.time() <= time(7,0)) and (od.time() <= time(15,0)):
+        if pr_time <= time(7,0) and od_time <= time(15,0):
             morning = {"prichod": pr, "odchod": od, "hours": SHIFT_HOURS}
-        if pr_time and (pr.time() >= time(13,0)) and (od.time() >= time(21,0)):
+        if pr_time >= time(13,0) and od_time >= time(21,0):
             afternoon = {"prichod": pr, "odchod": od, "hours": SHIFT_HOURS}
         if morning and afternoon:
             morning["hours"] = afternoon["hours"] = 15.25
