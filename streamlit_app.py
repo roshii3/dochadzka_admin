@@ -8,7 +8,7 @@ import io
 # ---------- CONFIG ----------
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
-ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
+ADMIN_PASS = st.secrets.get("ADMIN_PASS")
 databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 
 # ---------- SETTINGS ----------
