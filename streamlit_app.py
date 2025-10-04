@@ -120,12 +120,14 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         results[pos] = {"morning": morning, "afternoon": afternoon, "comments": comments}
     return results
 
+
 def build_hours_table(df_week: pd.DataFrame):
     if df_week.empty:
         return None
     monday = df_week["date"].min()
     days = [monday + timedelta(days=i) for i in range(7)]
     hours_matrix = pd.DataFrame(index=POSITIONS, columns=[d.strftime("%A") for d in days])
+
     for d in days:
         df_d = df_week[df_week["date"] == d]
         if df_d.empty:
@@ -134,9 +136,26 @@ def build_hours_table(df_week: pd.DataFrame):
             continue
         summ = summarize_day(df_d, d)
         for pos in POSITIONS:
-            h_m = summ[pos]["morning"]["hours"]
-            h_a = summ[pos]["afternoon"]["hours"]
-            hours_matrix.at[pos, d.strftime("%A")] = h_m + h_a
+            m = summ[pos]["morning"]
+            a = summ[pos]["afternoon"]
+
+            # rozhodujeme podľa osoby
+            if pos == "Veliteľ":
+                full_shift_hours = DOUBLE_SHIFT_HOURS  # 16,25 h
+            else:
+                full_shift_hours = 15.25
+
+            # ak je R+P OK → bereme full_shift_hours
+            if m["status"] == "R+P OK":
+                hours = full_shift_hours
+            # inak, ak sú absolvované obe smeny (ranná aj poobedná) → tiež full_shift_hours
+            elif m.get("hours", 0) > 0 and a.get("hours", 0) > 0:
+                hours = full_shift_hours
+            else:
+                # len ranná alebo poobedná
+                hours = m.get("hours", 0) + a.get("hours", 0)
+
+            hours_matrix.at[pos, d.strftime("%A")] = hours
     hours_matrix["SUM"] = hours_matrix.sum(axis=1)
     hours_matrix.loc["TOTAL"] = hours_matrix.sum()
     return hours_matrix
