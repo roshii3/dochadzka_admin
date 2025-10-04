@@ -10,7 +10,7 @@ from supabase import create_client
 # =====================================
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
-ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
+ADMIN_PASS = st.secrets.get("ADMIN_PASS")
 databaze = create_client(DATABAZA_URL, DATABAZA_KEY)
 
 tz = pytz.timezone("Europe/Bratislava")
