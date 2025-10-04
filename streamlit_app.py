@@ -33,6 +33,69 @@ DOUBLE_SHIFT_HOURS = 15.25
 VELITEL_DOUBLE = 16.25
 
 # ---------- HELPERS ----------
+def calculate_shift_hours(pr, od, position):
+    """Vracia (status, hodiny) podľa príchodu/odchodu a pozície"""
+    if pd.isna(pr) and pd.isna(od):
+        return ("❌ absent", 0.0)
+    if pd.isna(pr):
+        return (f"⚠️ chýba príchod (od: {od})", 0.0)
+    if pd.isna(od):
+        return (f"⚠️ chýba odchod (pr: {pr})", 0.0)
+
+    pr_t = pr.time()
+    od_t = od.time()
+
+    # Veliteľ: max 16,25 h, R+P
+    if position.lower().startswith("vel"):
+        if pr_t <= time(5, 0) and od_t >= time(22, 0):
+            return ("✅ R+P Veliteľ OK", 16.25)
+        else:
+            return ("⚠️ chybná smena Veliteľ", 0.0)
+
+    # Ostatní
+    hours = 0
+    status_list = []
+    if pr_t <= time(7, 0) and od_t >= time(14, 0):
+        hours += 7.5
+        status_list.append("✅ Ranná OK")
+    if pr_t <= time(14, 0) and od_t >= time(21, 0):
+        hours += 7.5
+        status_list.append("✅ Poobedná OK")
+    if hours > 15.25:
+        hours = 15.25  # max za deň
+    if not status_list:
+        return ("⚠️ chybná smena", 0.0)
+    return (" + ".join(status_list), hours)
+
+
+def summarize_day(df_day: pd.DataFrame, target_date: date):
+    """Vytvorí denný prehľad pre všetky pozície s detailom"""
+    results = {}
+    for pos in POSITIONS:
+        pos_df = df_day[df_day["position"] == pos]
+        pairs = get_user_pairs(pos_df)
+        morning = {"status": "❌ absent", "hours": 0}
+        afternoon = {"status": "❌ absent", "hours": 0}
+        comments = []
+
+        for user, pair in pairs.items():
+            status, hours = calculate_shift_hours(pair["pr"], pair["od"], pos)
+            # Veliteľ: rovno R+P
+            if pos.lower().startswith("vel") and "R+P" in status:
+                morning = {"status": status, "hours": hours}
+                afternoon = {"status": status, "hours": hours}
+            else:
+                # ostatní
+                if "Ranná" in status:
+                    morning = {"status": status, "hours": 7.5}
+                if "Poobedná" in status:
+                    afternoon = {"status": status, "hours": 7.5}
+                if "chybná" in status or "chýba" in status:
+                    comments.append(f"{user}: {status} (pr: {pair['pr']}, od: {pair['od']})")
+
+        results[pos] = {"morning": morning, "afternoon": afternoon, "comments": comments}
+    return results
+
 def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     res = databaze.table("attendance").select("*")\
         .gte("timestamp", start_dt.isoformat())\
@@ -62,50 +125,7 @@ def get_user_pairs(pos_day_df: pd.DataFrame):
         pairs[user] = {"pr": pr_min, "od": od_max}
     return pairs
 
-def calculate_shift_hours(pr, od, position):
-    if pd.isna(pr) or pd.isna(od):
-        return ("❌ bez príchodu/odchodu", 0.0)
 
-    pr_t = pr.time()
-    od_t = od.time()
-
-    # Veliteľ špeciálne pravidlo
-    if position.lower().startswith("vel"):
-        if pr_t <= time(5, 0) and (od_t >= time(22, 0) or od_t < time(2, 0)):
-            return ("✅ R+P Veliteľ OK", VELITEL_DOUBLE)
-
-    # R+P
-    if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
-        return ("✅ R+P OK", DOUBLE_SHIFT_HOURS)
-
-    # Ranná
-    if pr_t <= time(7, 0) and od_t <= time(15, 0):
-        return ("✅ Ranná OK", SHIFT_HOURS)
-
-    # Poobedná
-    if pr_t >= time(13, 0) and od_t >= time(21, 0):
-        return ("✅ Poobedná OK", SHIFT_HOURS)
-
-    return ("⚠️ chybná smena", 0.0)
-
-def summarize_day(df_day: pd.DataFrame, target_date: date):
-    results = {}
-    for pos in POSITIONS:
-        pos_df = df_day[df_day["position"] == pos]
-        pairs = get_user_pairs(pos_df)
-        morning = {"status": "❌ bez príchodu", "hours": 0}
-        afternoon = {"status": "❌ bez príchodu", "hours": 0}
-        for user, pair in pairs.items():
-            status, hours = calculate_shift_hours(pair["pr"], pair["od"], pos)
-            if "Ranná" in status:
-                morning = {"status": status, "hours": hours}
-            elif "Poobedná" in status:
-                afternoon = {"status": status, "hours": hours}
-            elif "R+P" in status:
-                morning = {"status": status, "hours": hours}
-                afternoon = {"status": status, "hours": hours}
-        results[pos] = {"morning": morning, "afternoon": afternoon}
-    return results
 
 def summarize_hours_week(df_week: pd.DataFrame, monday: date):
     days = [monday + timedelta(days=i) for i in range(7)]
