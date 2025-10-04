@@ -20,7 +20,7 @@ SHIFT_TIMES = {
     "poobedna": (time(14, 0), time(22, 0))
 }
 SHIFT_HOURS = 7.5
-DOUBLE_SHIFT_HOURS = 16.25  # veliteľ
+DOUBLE_SHIFT_HOURS = 16.25  # Veliteľ
 OTHER_DOUBLE_HOURS = 15.25  # ostatné pozície
 
 # ---------- HELPERS ----------
@@ -67,14 +67,11 @@ def classify_pair(pr, od, position):
     pr_t = pr.time()
     od_t = od.time()
 
-    # R+P pre všetky pozície
     if pr_t <= time(7,0) and od_t >= time(21,0):
         hours = DOUBLE_SHIFT_HOURS if position=="Veliteľ" else OTHER_DOUBLE_HOURS
         return {"status": "R+P OK", "hours": hours, "pr": pr, "od": od}
-    # ranná
     if pr_t <= time(7,0) and od_t <= time(15,0):
         return {"status": "Ranna OK", "hours": SHIFT_HOURS, "pr": pr, "od": od}
-    # poobedná
     if pr_t >= time(13,0) and od_t >= time(21,0):
         return {"status": "Poobedna OK", "hours": SHIFT_HOURS, "pr": pr, "od": od}
 
@@ -123,24 +120,34 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         results[pos] = {"morning": morning, "afternoon": afternoon, "comments": comments}
     return results
 
+def build_hours_table(df_week: pd.DataFrame):
+    if df_week.empty:
+        return None
+    monday = df_week["date"].min()
+    days = [monday + timedelta(days=i) for i in range(7)]
+    hours_matrix = pd.DataFrame(index=POSITIONS, columns=[d.strftime("%A") for d in days])
+    for d in days:
+        df_d = df_week[df_week["date"] == d]
+        if df_d.empty:
+            for pos in POSITIONS:
+                hours_matrix.at[pos, d.strftime("%A")] = 0
+            continue
+        summ = summarize_day(df_d, d)
+        for pos in POSITIONS:
+            h_m = summ[pos]["morning"]["hours"]
+            h_a = summ[pos]["afternoon"]["hours"]
+            hours_matrix.at[pos, d.strftime("%A")] = h_m + h_a
+    hours_matrix["SUM"] = hours_matrix.sum(axis=1)
+    hours_matrix.loc["TOTAL"] = hours_matrix.sum()
+    return hours_matrix
+
 def export_df_to_excel_with_hours(df_week: pd.DataFrame):
     out = BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df_week.to_excel(writer, index=False, sheet_name="Dochadzka")
-        # priprav sumar hodin
-        monday = df_week["date"].min()
-        days = [monday + timedelta(days=i) for i in range(7)]
-        hours_matrix = pd.DataFrame(index=POSITIONS, columns=[d.strftime("%A") for d in days])
-        for d in days:
-            df_d = df_week[df_week["date"] == d]
-            summ = summarize_day(df_d, d)
-            for pos in POSITIONS:
-                h_m = summ[pos]["morning"]["hours"]
-                h_a = summ[pos]["afternoon"]["hours"]
-                hours_matrix.at[pos, d.strftime("%A")] = h_m + h_a
-        hours_matrix["SUM"] = hours_matrix.sum(axis=1)
-        hours_matrix.loc["TOTAL"] = hours_matrix.sum()
-        hours_matrix.to_excel(writer, sheet_name="Sumar hodin")
+        hours_matrix = build_hours_table(df_week)
+        if hours_matrix is not None:
+            hours_matrix.to_excel(writer, sheet_name="Sumar hodin")
     out.seek(0)
     return out
 
@@ -148,7 +155,7 @@ def export_df_to_excel_with_hours(df_week: pd.DataFrame):
 st.set_page_config(page_title="Admin - Dochádzka", layout="wide")
 st.title("Admin — Denný / Týždenný prehľad a opravy")
 
-# ADMIN login
+# Admin login
 if "admin_logged" not in st.session_state:
     st.session_state.admin_logged = False
 if not st.session_state.admin_logged:
@@ -174,33 +181,44 @@ df_week = load_attendance(tz.localize(start_dt), tz.localize(end_dt))
 selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=datetime.now(tz).date(), min_value=monday, max_value=monday+timedelta(days=6))
 st.header(f"Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
 df_day = df_week[df_week["date"] == selected_day]
-summary = summarize_day(df_day, selected_day)
+if df_day.empty:
+    st.info("Pre tento deň nie sú dostupné žiadne dáta.")
+else:
+    summary = summarize_day(df_day, selected_day)
 
-# zobraz denny prehlad
-cols = st.columns(3)
-for i, pos in enumerate(POSITIONS):
-    col = cols[i % 3]
-    info = summary[pos]
-    morn = info["morning"]
-    aft = info["afternoon"]
+    # zobraz denny prehlad
+    cols = st.columns(3)
+    for i, pos in enumerate(POSITIONS):
+        col = cols[i % 3]
+        info = summary[pos]
+        morn = info["morning"]
+        aft = info["afternoon"]
 
-    def fmt(item):
-        if item["status"] in ("absent", "none"):
-            return ("❌ bez príchodu", "0 h")
-        if item["status"].startswith("⚠"):
-            pr_s = item.get("pr").strftime("%H:%M") if item.get("pr") else "-"
-            od_s = item.get("od").strftime("%H:%M") if item.get("od") else "-"
-            return (item["status"], f"{item['hours']} h ({pr_s} - {od_s})")
-        return (item["status"], f"{item['hours']} h ({item['pr'].strftime('%H:%M')} - {item['od'].strftime('%H:%M')})")
+        def fmt(item):
+            if item["status"] in ("absent", "none"):
+                return ("❌ bez príchodu", "0 h")
+            if item["status"].startswith("⚠"):
+                pr_s = item.get("pr").strftime("%H:%M") if item.get("pr") else "-"
+                od_s = item.get("od").strftime("%H:%M") if item.get("od") else "-"
+                return (item["status"], f"{item['hours']} h ({pr_s} - {od_s})")
+            return (item["status"], f"{item['hours']} h ({item['pr'].strftime('%H:%M')} - {item['od'].strftime('%H:%M')})")
 
-    m_status, m_times = fmt(morn)
-    a_status, a_times = fmt(aft)
+        m_status, m_times = fmt(morn)
+        a_status, a_times = fmt(aft)
 
-    col.markdown(f"### **{pos}**")
-    col.markdown(f"**Ranná:** {m_status}  \n{m_times}")
-    col.markdown(f"**Poobedná:** {a_status}  \n{a_times}")
-    if info["comments"]:
-        col.error(" • ".join(info["comments"]))
+        col.markdown(f"### **{pos}**")
+        col.markdown(f"**Ranná:** {m_status}  \n{m_times}")
+        col.markdown(f"**Poobedná:** {a_status}  \n{a_times}")
+        if info["comments"]:
+            col.error(" • ".join(info["comments"]))
+
+# ---------- Týždenná tabuľka hodín ----------
+st.header("Týždenný prehľad hodín")
+hours_matrix = build_hours_table(df_week)
+if hours_matrix is None:
+    st.info("Pre tento týždeň nie sú dostupné žiadne dáta.")
+else:
+    st.dataframe(hours_matrix.fillna(0))
 
 # Export
 st.header("Export dát")
