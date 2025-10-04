@@ -1,4 +1,3 @@
-Perfektné. Tu je kompletne prepracovaný skript s jednotnou logikou výpočtu hodín, detailom chýb a exportom do Excelu s dvoma sheety: denný prehľad a týždenný prehľad.
 
 # streamlit_admin_dochadzka.py
 import streamlit as st
