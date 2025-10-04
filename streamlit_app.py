@@ -2,121 +2,167 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
-import io
+from io import BytesIO
+from supabase import create_client
 
-# ========== KONFIGURÁCIA ==========
-st.set_page_config(page_title="Dochádzka SBS", layout="wide")
-hide_streamlit_style = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    </style>
-"""
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+# =====================================
+# DB CONNECTION
+# =====================================
+DATABAZA_URL = st.secrets["DATABAZA_URL"]
+DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
+ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
+databaze = create_client(DATABAZA_URL, DATABAZA_KEY)
 
 tz = pytz.timezone("Europe/Bratislava")
 
-# ========== NAČÍTANIE DÁT ==========
-@st.cache_data
+# =====================================
+# SKRYTIE HLAVIČKY
+# =====================================
+st.markdown("""
+    <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
+
+# =====================================
+# FUNKCIE
+# =====================================
+@st.cache_data(ttl=60)
 def load_data():
-    # Tu si pripoj DB (alebo pre test CSV)
-    df = pd.read_csv("dochadzka.csv")
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["action"] = df["action"].str.replace("Ă", "Á").str.replace("ľ", "ľ").str.strip()
+    """Načíta údaje z databázy Supabase"""
+    response = databaze.table("dochadzka").select("*").execute()
+    df = pd.DataFrame(response.data)
+    if df.empty:
+        return df
+    df["prichod"] = pd.to_datetime(df["prichod"], errors="coerce")
+    df["odchod"] = pd.to_datetime(df["odchod"], errors="coerce")
     return df
 
-df = load_data()
-
-# ========== POMOCNÉ FUNKCIE ==========
-def calculate_hours(row_group):
-    if len(row_group) < 2:
+def calculate_hours(prichod, odchod, pozicia):
+    """Výpočet hodín so špeciálnou logikou pre Veliteľa a celodenné zmeny"""
+    if pd.isnull(prichod) or pd.isnull(odchod):
         return 0
-    times = row_group["timestamp"].sort_values().tolist()
-    if len(times) % 2 != 0:
-        times = times[:-1]  # odstráň neúplné záznamy
-    total = sum([(times[i+1]-times[i]).total_seconds()/3600 for i in range(0, len(times), 2)])
-    return round(total, 2)
+    duration = (odchod - prichod).total_seconds() / 3600
 
-def calculate_hours_matrix(df_week, monday):
-    matrix = {}
-    for pos in sorted(df_week["position"].unique()):
-        matrix[pos] = []
-        for i in range(7):
-            day = monday + timedelta(days=i)
-            day_records = df_week[(df_week["timestamp"].dt.date == day.date()) & (df_week["position"] == pos)]
-            total_hours = calculate_hours(day_records)
-            # Logika pre r+P smenu
-            if 15 < total_hours < 16.3:
-                total_hours = 16.25
-            elif total_hours >= 7 and total_hours < 8:
-                total_hours = 7.5
-            elif total_hours > 8 and total_hours < 15:
-                total_hours = 15.0
-            matrix[pos].append(total_hours)
-    df_matrix = pd.DataFrame(matrix, index=["Pondelok","Utorok","Streda","Štvrtok","Piatok","Sobota","Nedeľa"]).T
-    df_matrix["SUM"] = df_matrix.sum(axis=1)
-    return df_matrix
+    if pozicia.lower() == "veliteľ":
+        if duration >= 15:
+            return 16.25  # Veliteľ - celý deň
+        elif duration >= 7:
+            return 7.5
+        else:
+            return round(duration, 2)
 
-def highlight_hours(val):
-    if val == 0:
-        color = 'lightcoral'
-    elif val in (7.5, 15, 16.25):
-        color = 'lightgreen'
-    else:
-        color = 'khaki'
-    return f'background-color: {color}'
+    if duration >= 14:
+        return 15.25  # Celodenná zmena
+    if duration >= 7:
+        return 7.5
+    return round(duration, 2)
 
-# ========== VÝBER TÝŽDŇA ==========
-st.sidebar.header("Nastavenie")
+def export_to_excel(daily_df, weekly_pivot):
+    """Export do Excelu - 2 sheety"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        daily_df.to_excel(writer, index=False, sheet_name="Denný prehľad")
+        weekly_pivot.to_excel(writer, sheet_name="Týždenný súhrn hodín")
+    return output.getvalue()
+
+# =====================================
+# APLIKÁCIA
+# =====================================
+st.sidebar.title("📅 Prehľad dochádzky")
+
+data = load_data()
+if data.empty:
+    st.warning("🔸 Rozsah nie je k dispozícii.")
+    st.stop()
+
 today = datetime.now(tz).date()
-week_offset = st.sidebar.number_input("Posuň týždeň (-1 = minulý, 0 = aktuálny, 1 = budúci)", -10, 10, 0)
-monday = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
-
-selected_day = st.sidebar.date_input(
-    "Denný prehľad - vyber deň",
-    value=today,
-    min_value=monday,
-    max_value=monday + timedelta(days=6)
+monday = today - timedelta(days=today.weekday())
+week_options = [monday - timedelta(weeks=i) for i in range(5)]
+selected_week = st.sidebar.selectbox(
+    "Vyber týždeň:",
+    week_options,
+    format_func=lambda d: f"Týždeň od {d.strftime('%d.%m.%Y')}"
 )
 
-df_week = df[(df["timestamp"].dt.date >= monday) & (df["timestamp"].dt.date <= monday + timedelta(days=6))]
+selected_day = st.sidebar.date_input(
+    "Vyber deň",
+    value=today,
+    min_value=selected_week,
+    max_value=selected_week + timedelta(days=6)
+)
+
+start_date = datetime.combine(selected_week, datetime.min.time()).astimezone(tz)
+end_date = start_date + timedelta(days=7)
+df_week = data[(data["prichod"] >= start_date) & (data["prichod"] < end_date)]
 
 if df_week.empty:
-    st.warning("📅 Dáta pre tento týždeň nie sú k dispozícii.")
+    st.warning("🔸 Rozsah nie je k dispozícii pre vybraný týždeň.")
+    st.stop()
+
+# =====================================
+# SPRACOVANIE ÚDAJOV
+# =====================================
+df_week["den"] = df_week["prichod"].dt.strftime("%A")
+df_week["hodiny"] = df_week.apply(
+    lambda r: calculate_hours(r["prichod"], r["odchod"], r["pozicia"]),
+    axis=1
+)
+
+# =====================================
+# TÝŽDENNÝ SÚHRN
+# =====================================
+pivot = pd.pivot_table(
+    df_week,
+    values="hodiny",
+    index="pozicia",
+    columns="den",
+    aggfunc="sum",
+    fill_value=0
+)
+
+order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+pivot = pivot.reindex(columns=order, fill_value=0)
+pivot.columns = ["Pondelok", "Utorok", "Streda", "Štvrtok", "Piatok", "Sobota", "Nedeľa"]
+pivot["SUM"] = pivot.sum(axis=1)
+pivot = pivot.round(2)
+
+st.subheader("📊 Týždenný súhrn hodín")
+st.dataframe(pivot, use_container_width=True)
+
+# =====================================
+# DENNÝ PREHĽAD
+# =====================================
+df_day = df_week[df_week["prichod"].dt.date == selected_day]
+
+st.subheader(f"📋 Denný prehľad – {selected_day.strftime('%d.%m.%Y')}")
+
+if df_day.empty:
+    st.info("Žiadne záznamy pre tento deň.")
 else:
-    df_day = df_week[df_week["timestamp"].dt.date == selected_day]
-    if df_day.empty:
-        st.warning("📅 Dáta pre tento deň nie sú k dispozícii.")
-    else:
-        st.header(f"Denný prehľad - {selected_day.strftime('%d.%m.%Y')}")
+    daily_summary = []
+    for pozicia, group in df_day.groupby("pozicia"):
+        total = group["hodiny"].sum()
+        prichody = group["prichod"].dt.strftime("%H:%M").tolist()
+        odchody = group["odchod"].dt.strftime("%H:%M").tolist()
+        records = [f"{p}-{o}" for p, o in zip(prichody, odchody)]
+        daily_summary.append({
+            "Pozícia": pozicia,
+            "Zmeny": " | ".join(records),
+            "Hodiny": total
+        })
+    df_daily_summary = pd.DataFrame(daily_summary)
+    st.dataframe(df_daily_summary, use_container_width=True)
 
-        for position in sorted(df_day["position"].unique()):
-            pos_data = df_day[df_day["position"] == position]
-            total = calculate_hours(pos_data)
-            if 15 < total < 16.3:
-                total = 16.25
-            elif total >= 7 and total < 8:
-                total = 7.5
-            elif total > 8 and total < 15:
-                total = 15.0
-            st.markdown(f"**{position}** — {total} h")
-
-    # ========== TÝŽDENNÁ TABUĽKA ==========
-    st.header("📊 Týždenný súhrn hodín podľa pozícií")
-    hours_matrix = calculate_hours_matrix(df_week, monday)
-    st.dataframe(hours_matrix.style.applymap(highlight_hours))
-
-    # ========== EXPORT DO EXCELU ==========
-    st.subheader("📤 Export do Excelu")
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        df_day.to_excel(writer, sheet_name="Denný_prehlad", index=False)
-        hours_matrix.to_excel(writer, sheet_name="Týždenný_súhrn")
-        writer.close()
-    st.download_button(
-        label="⬇️ Stiahnuť Excel report",
-        data=buffer.getvalue(),
-        file_name=f"report_{monday}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# =====================================
+# EXPORT DO EXCELU
+# =====================================
+excel_data = export_to_excel(df_day, pivot)
+st.download_button(
+    "⬇️ Exportovať do Excelu",
+    data=excel_data,
+    file_name=f"prehľad_{selected_week.strftime('%Y-%m-%d')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
