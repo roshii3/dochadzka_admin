@@ -32,7 +32,7 @@ st.markdown("""
 @st.cache_data(ttl=60)
 def load_data():
     """Načíta údaje z databázy Supabase"""
-    response = databaze.table("dochadzka").select("*").execute()
+    response = databaze.table("attendance").select("*").execute()
     df = pd.DataFrame(response.data)
     if df.empty:
         return df
