@@ -1,12 +1,6 @@
-
-
-xlsxwriter
-
-
 streamlit==1.27.0
 pandas==2.1.1
 supabase==1.0.1
-openpyxl>=3.1.2
-python-dotenv
+openpyxl==3.1.5
+psycopg2-binary==2.9.7
 pytz
-streamlit
