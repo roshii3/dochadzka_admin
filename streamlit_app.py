@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
-from supabase import create_client
+from supabase import create_client, Client   # ✅ DOPLNENÉ
 from io import BytesIO
 
 # ---------- CONFIG ----------
@@ -78,7 +78,7 @@ def summarize_day(df_day):
         if len(valid_shifts) == 2:
             morning, afternoon = valid_shifts.iloc[0], valid_shifts.iloc[1]
             status = "✅ R+P OK"
-            total_hours = 15.25 if pos != "velitel" else 16.25
+            total_hours = 15.25 if pos.lower() != "veliteľ" else 16.25
             detail_text = (
                 f"Ranná: {morning['prichod'].strftime('%H:%M')} - {morning['odchod'].strftime('%H:%M')} "
                 f"({morning['hours']} h)\n"
