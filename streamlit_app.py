@@ -57,25 +57,22 @@ def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     # parse timestamps
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # localize/convert to tz
-    try:
-        if df["timestamp"].dt.tz is None:
-            df["timestamp"] = df["timestamp"].dt.tz_localize(tz)
-        else:
-            df["timestamp"] = df["timestamp"].dt.tz_convert(tz)
-    except Exception:
-        # fallback per-row
-        def loc(x):
-            if pd.isna(x):
-                return x
-            if x.tzinfo is None:
-                return tz.localize(x)
-            return x.astimezone(tz)
-        df["timestamp"] = df["timestamp"].apply(loc)
+    # lokalizuj každý timestamp
+    df["timestamp"] = df["timestamp"].apply(
+        lambda x: tz.localize(x) if pd.notna(x) and x.tzinfo is None else x
+    )
 
-    df["date"] = df["timestamp"].dt.date
+    # nastav date podobne ako u veliteľa
+    def assign_work_date(row):
+        if row["position"].lower().startswith("vel") and row["timestamp"].hour < 3:
+            return (row["timestamp"] - timedelta(days=1)).date()
+        return row["timestamp"].date()
+
+    df["date"] = df.apply(assign_work_date, axis=1)
     df["time"] = df["timestamp"].dt.time
+
     return df
+
 
 
 def get_user_pairs(pos_day_df: pd.DataFrame):
