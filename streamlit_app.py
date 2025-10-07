@@ -29,7 +29,7 @@ DATABAZA_KEY = st.secrets["SUPABASE_KEY"]
 ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
 
 # Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 
 tz = pytz.timezone("Europe/Bratislava")
 
