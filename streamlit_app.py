@@ -258,46 +258,31 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     return out
 
 # ========== INTERACTIVE DB INSERT with safe handling ==========
-
-def insert_missing_record(user_code: str, position: str, day: date, record_type: str, chosen_time: str):
-    """
-    Zapíše chýbajúci príchod alebo odchod do Supabase tabulky 'attendance'.
-    record_type: 'prichod' alebo 'odchod'
-    chosen_time: 'HH:MM' (string) OR ISO datetime string
-    """
-    # prepare timestamp
+def insert_missing_record(user_code, position, target_date, action_type, chosen_time):
+    """Vloží chýbajúci príchod/odchod do DB so správnym formátom času a valid=False."""
     try:
-        if isinstance(chosen_time, str) and len(chosen_time) == 5 and ":" in chosen_time:
-            t = datetime.strptime(chosen_time, "%H:%M").time()
-            ts = tz.localize(datetime.combine(day, t))
+        dt = datetime.combine(target_date, chosen_time)
+        dt = tz.localize(dt)  # pridáme časovú zónu Europe/Bratislava
+        iso_ts = dt.isoformat()
+
+        response = databaze.table("attendance").insert({
+            "user_code": str(user_code),
+            "position": position,
+            "action": action_type.capitalize(),
+            "timestamp": iso_ts,
+            "valid": False
+        }).execute()
+
+        if response.data:
+            st.success(f"✅ {action_type.capitalize()} pre {user_code} bol úspešne doplnený ({iso_ts})")
         else:
-            # allow passing a datetime or iso str
-            ts = pd.to_datetime(chosen_time)
-            if ts.tzinfo is None:
-                ts = tz.localize(ts.to_pydatetime())
-            else:
-                ts = ts.astimezone(tz)
-    except Exception:
-        st.error("Neplatný čas pre vloženie.")
-        return
+            st.warning(f"⚠️ Záznam sa nepodarilo uložiť. Skontroluj Supabase pripojenie.")
 
-    action = "Príchod" if record_type == "prichod" else "Odchod"
-    payload = {
-        "user_code": user_code,
-        "position": position,
-        "action": action,
-        "timestamp": ts.isoformat()
-    }
-
-    try:
-        supabase.table("attendance").insert(payload).execute()
-        st.success(f"✅ Záznam uložený: {user_code} — {position} — {action} @ {ts.strftime('%Y-%m-%d %H:%M')}")
-        # mark reload required
-        st.session_state["_reload_needed"] = True
-    except ReadTimeout:
-        st.warning("⚠️ Timeout pri zápise do DB. Skús znovu stlačiť tlačidlo.")
     except Exception as e:
-        st.error(f"❌ Chyba pri zápise do attendance: {e}")
+        st.error(f"Chyba pri ukladaní: {e}")
+
+
+
 
 # ========== CONFLICTS BY SHIFT ==========
 def collect_conflicts_by_shift(df_day: pd.DataFrame):
