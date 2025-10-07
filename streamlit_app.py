@@ -175,14 +175,11 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         if position.lower().startswith("vel"):
             # Veliteľ double both present => 16.25 (per day)
             total = VELITEL_DOUBLE
-            morning["hours"] = total/2  # for display keep each half? we want to show per shift too; keep as 7.5 but total will be 16.25
+            morning["hours"] = total/2
             afternoon["hours"] = total/2
-            # We'll treat display: show 16.25 in summary row later
         else:
-            # non-velitel: if two different people cover morning and afternoon -> total 15.25
             morning["hours"] = SHIFT_HOURS
             afternoon["hours"] = SHIFT_HOURS
-    # If missing pr or od found earlier it sits in details
 
     return morning, afternoon, details
 
@@ -283,8 +280,54 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     out.seek(0)
     return out
 
+# ========== NEW HELPERS for interactive fixes ==========
+def insert_missing_record(user_code: str, position: str, day: date, record_type: str, chosen_time: str):
+    """Zapíše chýbajúci príchod alebo odchod do Supabase.
+       record_type: 'prichod' alebo 'odchod'
+       chosen_time: 'HH:MM'"""
+    t = datetime.strptime(chosen_time, "%H:%M").time()
+    ts = tz.localize(datetime.combine(day, t))
+    action = "Príchod" if record_type == "prichod" else "Odchod"
+    # insert
+    databaze.table("attendance").insert({
+        "user_code": user_code,
+        "position": position,
+        "action": action,
+        "timestamp": ts.isoformat()
+    }).execute()
+    # set flag to indicate data should be reloaded (we won't call st.experimental_rerun)
+    st.session_state["_reload_needed"] = True
+
+def collect_conflicts_by_shift(df_day: pd.DataFrame):
+    """Pre každý user spočíta koľko pozícií mal na rannej a poobednej zmene (podľa classify_pair).
+       Vráti DataFrame konfliktov kde count > 1 pre daný shift."""
+    rows = []
+    for pos in POSITIONS:
+        pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
+        pairs = get_user_pairs(pos_df)
+        for user, pair in pairs.items():
+            role_m, role_p, _, _, _ = classify_pair(pair["pr"], pair["od"], pos)
+            rows.append({
+                "user_code": user,
+                "position": pos,
+                "morning_role": role_m,
+                "afternoon_role": role_p
+            })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    # count how many distinct positions a user has where morning_role indicates morning coverage
+    df_morning = df[df["morning_role"].isin(["Ranna OK","R+P OK"])].groupby("user_code")["position"].nunique().reset_index().rename(columns={"position":"morning_count"})
+    df_afternoon = df[df["afternoon_role"].isin(["Poobedna OK","R+P OK"])].groupby("user_code")["position"].nunique().reset_index().rename(columns={"position":"afternoon_count"})
+    merged = pd.merge(df_morning, df_afternoon, on="user_code", how="outer").fillna(0)
+    merged["morning_count"] = merged["morning_count"].astype(int)
+    merged["afternoon_count"] = merged["afternoon_count"].astype(int)
+    # filter only conflicts (count > 1 for that shift)
+    conflicts = merged[(merged["morning_count"] > 1) | (merged["afternoon_count"] > 1)]
+    return conflicts
+
 # ========== UI / App logic ==========
-st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
+st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad) — rozšírené")
 
 # Simple admin login
 if "admin_logged" not in st.session_state:
@@ -295,11 +338,10 @@ if not st.session_state.admin_logged:
     if st.sidebar.button("Prihlásiť"):
         if ADMIN_PASS and pw == ADMIN_PASS:
             st.session_state.admin_logged = True
-            st.experimental_rerun()
-        else:
-            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
-if not st.session_state.admin_logged:
-    st.stop()
+            # nevoláme st.experimental_rerun() kvôli známej chybe u teba
+            st.success("Prihlásenie úspešné — stlač 'Obnoviť dáta' v bočnom paneli (alebo zatvor a otvor aplikáciu).")
+    if not st.session_state.admin_logged:
+        st.stop()
 
 # Week selection controls
 today = datetime.now(tz).date()
@@ -310,22 +352,78 @@ end_dt = start_dt + timedelta(days=7)
 start_dt = tz.localize(start_dt)
 end_dt = tz.localize(end_dt)
 
-df_week = load_attendance(start_dt, end_dt)
+# Refresh control (user said rerun has problems, tak dávame manuálny refresh)
+if "_reload_needed" not in st.session_state:
+    st.session_state["_reload_needed"] = False
+
+if st.sidebar.button("Obnoviť dáta (načítaj z DB)"):
+    st.session_state["_reload_needed"] = True
+
+# Only load if not loaded yet or reload requested
+if ("_loaded_week" not in st.session_state) or st.session_state["_reload_needed"] is True:
+    df_week = load_attendance(start_dt, end_dt)
+    st.session_state["_loaded_week"] = True
+    st.session_state["_reload_needed"] = False
+    st.session_state["_df_week_cache"] = df_week.to_dict('records') if not df_week.empty else []
+else:
+    # reconstruct df from cache (to avoid extra DB calls)
+    cached = st.session_state.get("_df_week_cache", [])
+    df_week = pd.DataFrame(cached)
 
 # chose day for daily view
 selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=today, min_value=monday, max_value=monday+timedelta(days=6))
-df_day = df_week[df_week["date"] == selected_day]
+# reconstruct df_day safely even if df_week empty
+if df_week.empty:
+    df_day = pd.DataFrame()
+else:
+    # ensure timestamp col is datetime
+    if "timestamp" in df_week.columns and not pd.api.types.is_datetime64_any_dtype(df_week["timestamp"]):
+        df_week["timestamp"] = pd.to_datetime(df_week["timestamp"], errors="coerce")
+    df_day = df_week[df_week["date"] == selected_day]
 
 # If df_day empty -> friendly message
 if df_week.empty:
     st.warning("Rozsah nie je dostupný v DB (žiadne dáta pre vybraný týždeň).")
 else:
+    # 1) Kontrola konfliktov: rovnaká zmena na viacerých pozíciách
+    conflicts = collect_conflicts_by_shift(df_day)
+    if not conflicts.empty:
+        st.error("⚠️ Nájdené konflikty: používateľ má viacero pozícií NA RANNEJ alebo NA POOBEDNEJ zmene (to je chyba).")
+        for _, r in conflicts.iterrows():
+            note = []
+            if r["morning_count"] > 1:
+                # vypíš pozície ktoré sú ráno
+                # zistíme ktoré pozície spadajú do rána pre tohto usera
+                morning_positions = []
+                for pos in POSITIONS:
+                    pos_df = df_day[df_day["position"] == pos]
+                    pairs = get_user_pairs(pos_df)
+                    p = pairs.get(r["user_code"])
+                    if p:
+                        role_m, _, _, _, _ = classify_pair(p["pr"], p["od"], pos)
+                        if role_m in ("Ranna OK","R+P OK"):
+                            morning_positions.append(pos)
+                note.append(f"Ranná: {', '.join(morning_positions)}")
+            if r["afternoon_count"] > 1:
+                afternoon_positions = []
+                for pos in POSITIONS:
+                    pos_df = df_day[df_day["position"] == pos]
+                    pairs = get_user_pairs(pos_df)
+                    p = pairs.get(r["user_code"])
+                    if p:
+                        _, role_p, _, _, _ = classify_pair(p["pr"], p["od"], pos)
+                        if role_p in ("Poobedna OK","R+P OK"):
+                            afternoon_positions.append(pos)
+                note.append(f"Poobedná: {', '.join(afternoon_positions)}")
+            st.write(f"👤 **{r['user_code']}** — " + " | ".join(note))
+
     # summarize selected day
     summary = summarize_day(df_day, selected_day)
 
     st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
     cols = st.columns(3)
     day_details_rows = []
+    # iterate positions and vizualizovať detaily
     for i, pos in enumerate(POSITIONS):
         col = cols[i % 3]
         info = summary[pos]
@@ -337,15 +435,69 @@ else:
         m_detail = m.get("detail") or "-"
         a_detail = p.get("detail") or "-"
         col.markdown(f"### **{pos}**")
-        col.markdown(f"**Ranná:** {m_status} — {m.get('hours',0)} h")
-        if m_detail:
+        # morning card
+        if m_status in ("Ranna OK","R+P OK"):
+            col.success(f"Ranná: {m_status} — {m.get('hours',0)} h")
+        elif m_status == "absent":
+            col.info("Ranná: neprítomný")
+        elif "missing" in str(m_status).lower() or "missing" in str(m_detail).lower():
+            col.warning(f"Ranná: {m_status} — {m.get('hours',0)} h")
+        else:
+            col.info(f"Ranná: {m_status} — {m.get('hours',0)} h")
+
+        if m_detail and m_detail != "-":
             col.caption(f"Detail: {m_detail}")
-        col.markdown(f"**Poobedná:** {a_status} — {p.get('hours',0)} h")
-        if a_detail:
+
+        # afternoon card
+        if a_status in ("Poobedna OK","R+P OK"):
+            col.success(f"Poobedná: {a_status} — {p.get('hours',0)} h")
+        elif a_status == "absent":
+            col.info("Poobedná: neprítomný")
+        elif "missing" in str(a_status).lower() or "missing" in str(a_detail).lower():
+            col.warning(f"Poobedná: {a_status} — {p.get('hours',0)} h")
+        else:
+            col.info(f"Poobedná: {a_status} — {p.get('hours',0)} h")
+
+        if a_detail and a_detail != "-":
             col.caption(f"Detail: {a_detail}")
+
+        # show any detail messages as expandery, s možnosťou doplniť chýbajúci príchod/odchod
         if info["details"]:
-            for d in info["details"]:
-                col.error(d)
+            for k, d in enumerate(info["details"]):
+                # d format: "{user}: missing_odchod — pr:{pr} od:{od}"
+                with col.expander(f"⚠️ Chybný záznam — {d.split('—')[0].strip()}", expanded=False):
+                    parts = d.split("—")
+                    left = parts[0].strip()
+                    right = parts[1].strip() if len(parts) > 1 else ""
+                    # extract user
+                    user_code = left.split(":")[0].strip()
+                    st.markdown(f"**Používateľ:** `{user_code}`")
+                    if "missing_prichod" in d or "missing_pr" in d:
+                        st.warning("Chýba **príchod**")
+                        st.caption(f"Info: {right}")
+                        chosen_time = st.selectbox(
+                            "Vyber čas pre doplnenie príchodu:",
+                            ["06:00", "14:00", "22:00"],
+                            key=f"pr_{user_code}_{pos}_{k}"
+                        )
+                        if st.button(f"Doplniť príchod pre {user_code} na {pos}", key=f"btn_pr_{user_code}_{pos}_{k}"):
+                            insert_missing_record(user_code, pos, selected_day, "prichod", chosen_time)
+                            st.success(f"✅ Príchod doplnený: {chosen_time} (nezabudni stlačiť 'Obnoviť dáta' v bočnom paneli).")
+                    if "missing_odchod" in d or "missing_od" in d:
+                        st.warning("Chýba **odchod**")
+                        st.caption(f"Info: {right}")
+                        chosen_time = st.selectbox(
+                            "Vyber čas pre doplnenie odchodu:",
+                            ["06:00", "14:00", "22:00"],
+                            key=f"od_{user_code}_{pos}_{k}"
+                        )
+                        if st.button(f"Doplniť odchod pre {user_code} na {pos}", key=f"btn_od_{user_code}_{pos}_{k}"):
+                            insert_missing_record(user_code, pos, selected_day, "odchod", chosen_time)
+                            st.success(f"✅ Odchod doplnený: {chosen_time} (nezabudni stlačiť 'Obnoviť dáta' v bočnom paneli).")
+                    if "invalid" in d or "invalid_times" in d:
+                        st.error("Neštandardné časy (invalid_times) — skontroluj záznamy ručne.")
+                        st.caption(f"Info: {right}")
+
         # collect for excel sheet
         day_details_rows.append({
             "position": pos,
@@ -373,3 +525,7 @@ else:
             df_raw["timestamp"] = df_raw["timestamp"].apply(lambda x: x.isoformat() if pd.notna(x) else "")
         xls = excel_with_colors(df_matrix, df_day_details, df_raw, monday)
         st.download_button("Stiahnuť XLSX", data=xls, file_name=f"dochadzka_{monday}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# Footer note about refresh
+st.markdown("---")
+st.caption("Po doplnení chýbajúcich záznamov stlač v bočnom paneli **Obnoviť dáta (načítaj z DB)**. Nepoužívame st.experimental_rerun() kvôli známemu problému — preto ručné obnovenie.")
