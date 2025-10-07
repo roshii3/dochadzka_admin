@@ -57,16 +57,23 @@ def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     # parse timestamps
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
 
-    # ensure tz-aware
-    df["timestamp"] = df["timestamp"].apply(
-        lambda x: tz.localize(x) if pd.notna(x) and x.tzinfo is None else
-                  x.astimezone(tz) if pd.notna(x) else x
-    )
+    # bezpečná konverzia na tz-aware datetime
+    def ensure_tz(dt):
+        if pd.isna(dt):
+            return pd.NaT
+        if dt.tzinfo is None:
+            return tz.localize(dt)
+        else:
+            return dt.astimezone(tz)
 
-    # store date as tz-aware datetime at 00:00:00
-    df["date"] = df["timestamp"].dt.floor('D')
+    df["timestamp"] = df["timestamp"].apply(ensure_tz)
+
+    # date a time
+    df["date"] = df["timestamp"].dt.floor('D')  # tz-aware midnight
     df["time"] = df["timestamp"].dt.strftime("%H:%M:%S")
     return df
+
+
 
 def get_user_pairs(pos_day_df: pd.DataFrame):
     pairs = {}
