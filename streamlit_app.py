@@ -258,32 +258,85 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     return out
 
 # ========== INTERACTIVE DB INSERT with safe handling ==========
-def insert_missing_record(user_code, position, target_date, action_type, chosen_time):
-    """Vloží chýbajúci príchod/odchod do DB so správnym formátom času a valid=False."""
+def insert_missing_record(user_code, position, target_date, record_type, chosen_time):
+    """
+    Zapíše chýbajúci príchod/odchod do attendance.
+    - target_date: datetime.date
+    - record_type: 'prichod' alebo 'odchod'
+    - chosen_time: môže byť:
+        * "HH:MM" (string),
+        * "YYYY-MM-DD HH:MM:SS" alebo ISO string,
+        * datetime.time,
+        * datetime.datetime
+    Vloží timestamp v ISO formáte s časovou zónou a valid=False.
+    """
+    # získaj klienta (podporuje premenné 'supabase' alebo 'databaze')
+    client = globals().get("supabase") or globals().get("databaze")
+    if client is None:
+        st.error("Supabase client nie je definovaný (očakáva sa 'supabase' alebo 'databaze').")
+        return
+
+    # parsovanie chosen_time -> tz-aware datetime 'ts'
     try:
-        dt = datetime.combine(target_date, chosen_time)
-        dt = tz.localize(dt)  # pridáme časovú zónu Europe/Bratislava
-        iso_ts = dt.isoformat()
+        # 1) string typu "HH:MM"
+        if isinstance(chosen_time, str):
+            s = chosen_time.strip()
+            try:
+                t = datetime.strptime(s, "%H:%M").time()
+                ts = tz.localize(datetime.combine(target_date, t))
+            except ValueError:
+                # 2) string typu full datetime / ISO
+                dt = pd.to_datetime(s)
+                if pd.isna(dt):
+                    raise ValueError("Nepodarilo sa parsovať string ako datetime.")
+                # dt môže byť tz-naive alebo tz-aware
+                if dt.tzinfo is None:
+                    ts = tz.localize(dt.to_pydatetime())
+                else:
+                    ts = dt.to_pydatetime().astimezone(tz)
 
-        response = databaze.table("attendance").insert({
-            "user_code": str(user_code),
-            "position": position,
-            "action": action_type.capitalize(),
-            "timestamp": iso_ts,
-            "valid": False
-        }).execute()
+        # 3) datetime.datetime
+        elif isinstance(chosen_time, datetime):
+            dt = chosen_time
+            if dt.tzinfo is None:
+                ts = tz.localize(dt)
+            else:
+                ts = dt.astimezone(tz)
 
-        if response.data:
-            st.success(f"✅ {action_type.capitalize()} pre {user_code} bol úspešne doplnený ({iso_ts})")
+        # 4) datetime.time
+        elif isinstance(chosen_time, time):
+            ts = tz.localize(datetime.combine(target_date, chosen_time))
+
         else:
-            st.warning(f"⚠️ Záznam sa nepodarilo uložiť. Skontroluj Supabase pripojenie.")
+            st.error("Neplatný formát pre 'chosen_time' — použi 'HH:MM', datetime alebo time objekt.")
+            return
 
     except Exception as e:
-        st.error(f"Chyba pri ukladaní: {e}")
+        st.error(f"Chyba pri parsovaní času: {e}")
+        return
 
+    iso_ts = ts.isoformat()
+    action = "Príchod" if str(record_type).lower().startswith("pr") else "Odchod"
 
+    payload = {
+        "user_code": str(user_code),
+        "position": position,
+        "action": action,
+        "timestamp": iso_ts,
+        "valid": False
+    }
 
+    try:
+        client.table("attendance").insert(payload).execute()
+        st.success(f"✅ Uložené: {user_code} — {position} — {action} @ {iso_ts}")
+        # označíme, že treba reload dát (tvoj refresh tlačidlo)
+        st.session_state["_reload_needed"] = True
+    except ReadTimeout:
+        st.warning("⚠️ Timeout pri zápise do DB. Skús znovu.")
+    except Exception as e:
+        st.error(f"❌ Chyba pri zápise do attendance: {e}")
 
+    
 # ========== CONFLICTS BY SHIFT ==========
 def collect_conflicts_by_shift(df_day: pd.DataFrame):
     """Deteguje, či má user viac než 1 pozíciu na danej zmene (ranná/poobedná)."""
