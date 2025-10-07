@@ -24,8 +24,8 @@ header {visibility: hidden;}
 st.markdown(hide_css, unsafe_allow_html=True)
 
 # Secrets (Streamlit Cloud)
-DATABAZA_URL = st.secrets["SUPABASE_URL"]
-DATABAZA_KEY = st.secrets["SUPABASE_KEY"]
+DATABAZA_URL = st.secrets["DATABAZA_URL"]
+DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
 ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
 
 # Supabase client
