@@ -39,34 +39,21 @@ VELITEL_DOUBLE = 16.25
 
 # ========== HELPERS ==========
 def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
-    """Načíta záznamy medzi start_dt (inclusive) a end_dt (exclusive)."""
-    res = databaze.table("attendance").select("*").gte("timestamp", start_dt.isoformat()).lt("timestamp", end_dt.isoformat()).execute()
+    res = databaze.table("attendance").select("*")\
+        .gte("timestamp", start_dt.isoformat())\
+        .lt("timestamp", end_dt.isoformat()).execute()
     df = pd.DataFrame(res.data)
     if df.empty:
         return df
 
-    # parse timestamps
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-
-    # localize/convert to tz
-    try:
-        if df["timestamp"].dt.tz is None:
-            df["timestamp"] = df["timestamp"].dt.tz_localize(tz)
-        else:
-            df["timestamp"] = df["timestamp"].dt.tz_convert(tz)
-    except Exception:
-        # fallback per-row
-        def loc(x):
-            if pd.isna(x):
-                return x
-            if x.tzinfo is None:
-                return tz.localize(x)
-            return x.astimezone(tz)
-        df["timestamp"] = df["timestamp"].apply(loc)
-
+    # jednoduchá a spoľahlivá per-row lokalizácia
+    df["timestamp"] = df["timestamp"].apply(lambda x: tz.localize(x) if pd.notna(x) and x.tzinfo is None else x)
     df["date"] = df["timestamp"].dt.date
     df["time"] = df["timestamp"].dt.time
     return df
+
+
 
 def get_user_pairs(pos_day_df: pd.DataFrame):
     """Pre pozíciu v danom dni vráti pre každého user minimalny príchod a maximalny odchod."""
