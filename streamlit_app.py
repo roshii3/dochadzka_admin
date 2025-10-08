@@ -165,8 +165,9 @@ if not st.session_state.admin_logged:
 today = datetime.now(tz).date()
 week_ref = st.sidebar.date_input("Vyber deň v týždni:", value=today)
 monday = week_ref - timedelta(days=week_ref.weekday())
-start_dt = tz.localize(datetime.combine(monday, time(0,0)))
-end_dt = tz.localize(start_dt + timedelta(days=7))
+start_dt = tz.localize(datetime.combine(monday, time(0,0)))  # tz-aware
+end_dt = start_dt + timedelta(days=7)  # tz-aware, bez localize
+
 
 df_week = load_attendance(start_dt, end_dt)
 selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=today, min_value=monday, max_value=monday+timedelta(days=6))
