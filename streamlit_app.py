@@ -1,4 +1,4 @@
-# admin_attendance_full.py
+# admin_attendance_full_v2.py
 
 import streamlit as st
 import pandas as pd
@@ -149,7 +149,6 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-
     for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index":"Pozícia"}), index=False, header=True):
         ws1.append(r)
     for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1+len(df_matrix.columns), max_row=1+len(df_matrix)):
@@ -161,28 +160,9 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
                 cell.fill = yellow
             elif val == "—":
                 pass
-
     ws2 = wb.create_sheet("Denné - detail")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
         ws2.append(r)
-    status_col_idx = None
-    headers = list(df_day_details.columns)
-    if "morning_status" in headers:
-        status_col_idx = headers.index("morning_status") + 1
-    if status_col_idx:
-        for row in ws2.iter_rows(min_row=2, max_row=1+len(df_day_details), min_col=1, max_col=len(df_day_details.columns)):
-            s1 = row[status_col_idx-1].value
-            s2 = row[status_col_idx].value if status_col_idx<len(row) else ""
-            for c in row:
-                if s1 and "OK" in str(s1):
-                    c.fill = green
-                elif s2 and "OK" in str(s2):
-                    c.fill = green
-                elif s1 and ("missing" in str(s1).lower() or "chybn" in str(s1).lower()):
-                    c.fill = red
-                elif s2 and ("missing" in str(s2).lower() or "chybn" in str(s2).lower()):
-                    c.fill = red
-
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
@@ -194,7 +174,6 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
 # ================== APP ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
-# Admin login
 if "admin_logged" not in st.session_state:
     st.session_state.admin_logged = False
 if not st.session_state.admin_logged:
@@ -248,7 +227,7 @@ else:
             "afternoon_detail": p.get('detail') or "-",
             "total_hours": info['total_hours']
         })
-        # Oprava chýbajúcich
+        # Oprava chýbajúcich záznamov
         for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
             if "missing" in stat.lower():
                 st.markdown(f"#### Opraviť {act} pre pozíciu {pos}")
