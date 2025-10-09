@@ -132,18 +132,34 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
+def save_attendance(user_code, position, action, now=None):
+    user_code = user_code.strip()
+    if not is_valid_code(user_code):
+        st.warning("⚠️ Neplatné číslo čipu!")
+        return False
 
+    if not now:
+        now = datetime.now(tz)
 
-def save_attendance(user_code, position, action, timestamp):
-    # timestamp je timezone-aware datetime
-    ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"  # trim na milisekundy a pridaj +00
+    # Posun o +2h pred uložením do DB (ak potrebuješ, inak ponechaj now)
+    now_corrected = now
+
+    is_valid = valid_arrival(now_corrected) if action == "Príchod" else valid_departure(now_corrected)
+
+    # Uloženie do DB vo formáte s milisekundami a +00
+    ts_str = now_corrected.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
+
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
         "action": action,
-        "timestamp": ts_str
+        "timestamp": ts_str,
+        "valid": is_valid
     }).execute()
-    return True
+
+    return is_valid
+
+
 
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
     wb = Workbook()
