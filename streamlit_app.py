@@ -133,16 +133,17 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
+
 def save_attendance(user_code, position, action, now=None):
     user_code = user_code.strip()
-
     if not now:
-        now = datetime.now(tz)
+        now = datetime.now(tz)  # timezone-aware
 
-    now_corrected = now
-    is_valid = True  # nevalidujeme
+    # Tu validácia ak potrebuješ
+    is_valid = True
 
-    ts_str = now_corrected.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
+    # formátovanie presne ako Yam appka
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
 
     databaze.table("attendance").insert({
         "user_code": user_code,
@@ -153,7 +154,6 @@ def save_attendance(user_code, position, action, now=None):
     }).execute()
 
     return is_valid
-
 
 
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
