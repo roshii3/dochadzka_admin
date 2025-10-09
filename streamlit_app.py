@@ -132,47 +132,33 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
+
 def save_attendance(user_code, position, action, now=None):
     user_code = user_code.strip()
 
-    # Validácia user_code (príklad, doplň podľa potreby)
-    try:
-        is_valid_code
-    except NameError:
-        def is_valid_code(code):
-            return isinstance(code, str) and len(code) >= 6
-
-    if not is_valid_code(user_code):
-        st.warning("⚠️ Neplatné číslo čipu!")
-        return False
-
-    # Ak nie je zadaný čas, použije sa aktuálny čas
+    # ak nie je zadaný čas, použijeme aktuálny
     if not now:
-        now = datetime.now(tz)  # timezone-aware
+        now = datetime.now(tz)
 
-    # Posun o +2h pred uložením, ak potrebuješ
-    now_corrected = now
+    # Ak bol čas zadaný ručne (bez sekúnd a mikrosekúnd),
+    # pridáme aktuálne sekundy a milisekundy
+    if now.second == 0 and now.microsecond == 0:
+        current = datetime.now(tz)
+        now = now.replace(second=current.second, microsecond=current.microsecond)
 
-    # Validácia príchodu/odchodu
-    try:
-        is_valid = valid_arrival(now_corrected) if action == "Príchod" else valid_departure(now_corrected)
-    except NameError:
-        is_valid = True  # ak tieto funkcie nie sú definované
+    # formátovanie presne ako Yam app
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
 
-    # Formátovanie timestampu presne ako Yam appka: YYYY-MM-DD HH:MM:SS.mmm+00
-    ts_str = now_corrected.strftime("%Y-%m-%d %H:%M:%S") + f".{int(now_corrected.microsecond/1000):03d}+00"
-
-    # Uloženie do Supabase
+    # uloženie
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
         "action": action,
         "timestamp": ts_str,
-        "valid": is_valid
+        "valid": True
     }).execute()
 
-    return is_valid
-
+    return True
 
 
 
