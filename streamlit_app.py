@@ -132,21 +132,16 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
+
 def save_attendance(user_code, position, action, now=None):
     user_code = user_code.strip()
-    if not is_valid_code(user_code):
-        st.warning("⚠️ Neplatné číslo čipu!")
-        return False
 
     if not now:
         now = datetime.now(tz)
 
-    # Posun o +2h pred uložením do DB (ak potrebuješ, inak ponechaj now)
     now_corrected = now
+    is_valid = True  # nevalidujeme
 
-    is_valid = valid_arrival(now_corrected) if action == "Príchod" else valid_departure(now_corrected)
-
-    # Uloženie do DB vo formáte s milisekundami a +00
     ts_str = now_corrected.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
 
     databaze.table("attendance").insert({
