@@ -86,33 +86,89 @@ def classify_pair(pr, od, position):
     return ("invalid","invalid",0.0,0.0,msgs)
 
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
-    morning = {"status":"absent","hours":0.0,"detail":None}
-    afternoon = {"status":"absent","hours":0.0,"detail":None}
+    morning = {"status": "absent", "hours": 0.0, "detail": None}
+    afternoon = {"status": "absent", "hours": 0.0, "detail": None}
     details = []
+
     if pos_day_df.empty:
         return morning, afternoon, details
+
     pairs = get_user_pairs(pos_day_df)
     rp_user = None
+
+    # Skontroluj, či niekto nemá celodennú (R+P OK)
     for user, pair in pairs.items():
         role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
         if role_m == "R+P OK" and role_p == "R+P OK":
             rp_user = (user, pair, h_m, h_p)
             break
+
     if rp_user:
         user, pair, h_m, h_p = rp_user
-        morning = {"status":"R+P OK", "hours": h_m, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
-        afternoon = {"status":"R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        morning = {
+            "status": "R+P OK",
+            "hours": h_m,
+            "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"
+        }
+        afternoon = {
+            "status": "R+P OK",
+            "hours": h_p,
+            "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"
+        }
         return morning, afternoon, details
+
+    # Skontroluj jednotlivé prípady
     for user, pair in pairs.items():
         role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
-        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK","R+P OK"):
-            morning = {"status":"Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
-        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK","R+P OK"):
-            afternoon = {"status":"Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+
+        # === RANNÁ ===
+        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
+            morning = {
+                "status": role_m,
+                "hours": h_m,
+                "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"
+            }
+        elif role_m == "missing_pr":
+            morning = {
+                "status": "missing_pr",
+                "hours": 0.0,
+                "detail": f"{user}: chýba príchod"
+            }
+        elif role_m == "none" and "missing_odchod" in msgs:
+            morning = {
+                "status": "missing_od",
+                "hours": 0.0,
+                "detail": f"{user}: chýba odchod"
+            }
+
+        # === POOBEDNÁ ===
+        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
+            afternoon = {
+                "status": role_p,
+                "hours": h_p,
+                "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"
+            }
+        elif role_p == "missing_pr":
+            afternoon = {
+                "status": "missing_pr",
+                "hours": 0.0,
+                "detail": f"{user}: chýba príchod"
+            }
+        elif role_p == "none" and "missing_odchod" in msgs:
+            afternoon = {
+                "status": "missing_od",
+                "hours": 0.0,
+                "detail": f"{user}: chýba odchod"
+            }
+
+        # === Detaily ===
         if msgs:
             for m in msgs:
                 details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
+
     return morning, afternoon, details
+
+
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
