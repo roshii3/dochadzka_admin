@@ -132,19 +132,37 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
-
-
 def save_attendance(user_code, position, action, now=None):
     user_code = user_code.strip()
+
+    # Validácia user_code (príklad, doplň podľa potreby)
+    try:
+        is_valid_code
+    except NameError:
+        def is_valid_code(code):
+            return isinstance(code, str) and len(code) >= 6
+
+    if not is_valid_code(user_code):
+        st.warning("⚠️ Neplatné číslo čipu!")
+        return False
+
+    # Ak nie je zadaný čas, použije sa aktuálny čas
     if not now:
         now = datetime.now(tz)  # timezone-aware
 
-    # Tu validácia ak potrebuješ
-    is_valid = True
+    # Posun o +2h pred uložením, ak potrebuješ
+    now_corrected = now
 
-    # formátovanie presne ako Yam appka
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
+    # Validácia príchodu/odchodu
+    try:
+        is_valid = valid_arrival(now_corrected) if action == "Príchod" else valid_departure(now_corrected)
+    except NameError:
+        is_valid = True  # ak tieto funkcie nie sú definované
 
+    # Formátovanie timestampu presne ako Yam appka: YYYY-MM-DD HH:MM:SS.mmm+00
+    ts_str = now_corrected.strftime("%Y-%m-%d %H:%M:%S") + f".{int(now_corrected.microsecond/1000):03d}+00"
+
+    # Uloženie do Supabase
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
@@ -154,6 +172,8 @@ def save_attendance(user_code, position, action, now=None):
     }).execute()
 
     return is_valid
+
+
 
 
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
