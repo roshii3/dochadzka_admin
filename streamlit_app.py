@@ -25,7 +25,6 @@ st.markdown(hide_css, unsafe_allow_html=True)
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
 ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
-
 databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 tz = pytz.timezone("Europe/Bratislava")
 
@@ -58,7 +57,7 @@ def get_user_pairs(pos_day_df: pd.DataFrame):
         od = u[u["action"].str.lower() == "odchod"]["timestamp"]
         pr_min = pr.min() if not pr.empty else pd.NaT
         od_max = od.max() if not od.empty else pd.NaT
-        pairs[user] = {"pr": pr_min, "od": od_max}
+        pairs[user] = {"pr": pr_min, "od": od_max, "pr_count": len(pr), "od_count": len(od)}
     return pairs
 
 def classify_pair(pr, od, position):
@@ -181,6 +180,7 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
 # ================== APP ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
+# --- Login ---
 if "admin_logged" not in st.session_state:
     st.session_state.admin_logged = False
 if not st.session_state.admin_logged:
@@ -195,13 +195,12 @@ if not st.session_state.admin_logged:
     if not st.session_state.admin_logged:
         st.stop()
 
+# --- Výber týždňa a dňa ---
 today = datetime.now(tz).date()
 week_ref = st.sidebar.date_input("Vyber deň v týždni (týždeň začína pondelkom):", value=today)
 monday = week_ref - timedelta(days=week_ref.weekday())
-start_dt = datetime.combine(monday, time(0,0))
-end_dt = start_dt + timedelta(days=7)
-start_dt = tz.localize(start_dt)
-end_dt = tz.localize(end_dt)
+start_dt = tz.localize(datetime.combine(monday, time(0,0)))
+end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0,0)))
 df_week = load_attendance(start_dt, end_dt)
 selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=today, min_value=monday, max_value=monday+timedelta(days=6))
 df_day = df_week[df_week["date"] == selected_day]
@@ -224,41 +223,8 @@ else:
         col.markdown(f"**Ranná:** {m['status']} — {m['hours']} h")
         col.markdown(f"**Poobedná:** {p['status']} — {p['hours']} h")
         if info["details"]:
-            for idx, d in enumerate(info["details"]):
+            for d in info["details"]:
                 col.error(d)
-                if selected_day < today:
-                    # missing prichod
-                    if "missing_prichod" in d:
-                        st.markdown(f"#### Doplniť chýbajúci PRÍCHOD pre pozíciu {pos}")
-                        user_code_key = f"{pos}_prichod_user_{idx}"
-                        hour_key = f"{pos}_prichod_hour_{idx}"
-                        minute_key = f"{pos}_prichod_minute_{idx}"
-                        save_key = f"{pos}_prichod_save_{idx}"
-                        user_code = st.text_input(f"User code ({pos})", value="USER123456", key=user_code_key)
-                        hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=hour_key)
-                        minute = st.select_slider("Minúta", options=[0,15,30,45], key=minute_key)
-                        if st.button(f"Uložiť príchod ({pos})", key=save_key):
-                            ts = datetime.combine(selected_day, time(hour,minute))
-                            ts = tz.localize(ts)
-                            save_attendance(user_code, pos, "Príchod", ts)
-                            st.success("Záznam uložený ✅")
-                            st.experimental_rerun()
-                    # missing odchod
-                    if "missing_odchod" in d:
-                        st.markdown(f"#### Doplniť chýbajúci ODCHOD pre pozíciu {pos}")
-                        user_code_key = f"{pos}_odchod_user_{idx}"
-                        hour_key = f"{pos}_odchod_hour_{idx}"
-                        minute_key = f"{pos}_odchod_minute_{idx}"
-                        save_key = f"{pos}_odchod_save_{idx}"
-                        user_code = st.text_input(f"User code ({pos})", value="USER123456", key=user_code_key)
-                        hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=hour_key)
-                        minute = st.select_slider("Minúta", options=[0,15,30,45], key=minute_key)
-                        if st.button(f"Uložiť odchod ({pos})", key=save_key):
-                            ts = datetime.combine(selected_day, time(hour,minute))
-                            ts = tz.localize(ts)
-                            save_attendance(user_code, pos, "Odchod", ts)
-                            st.success("Záznam uložený ✅")
-                            st.experimental_rerun()
 
         day_details_rows.append({
             "position": pos,
@@ -270,6 +236,30 @@ else:
             "afternoon_detail": p.get('detail') or "-",
             "total_hours": info['total_hours']
         })
+
+        # ======= Doplnenie chýbajúcich záznamov iba pre predchádzajúce dni =======
+        if selected_day < today:
+            for idx, d in enumerate(info["details"]):
+                if "missing_prichod" in d:
+                    st.markdown(f"#### Doplniť chýbajúci PRÍCHOD pre pozíciu {pos}")
+                    user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_prichod_user_{idx}")
+                    hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_prichod_hour_{idx}")
+                    minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_prichod_minute_{idx}")
+                    if st.button(f"Uložiť príchod ({pos})", key=f"{pos}_prichod_save_{idx}"):
+                        ts = tz.localize(datetime.combine(selected_day, time(hour,minute)))
+                        save_attendance(user_code, pos, "Príchod", ts)
+                        st.success("Záznam uložený ✅")
+                        st.experimental_rerun()
+                if "missing_odchod" in d:
+                    st.markdown(f"#### Doplniť chýbajúci ODCHOD pre pozíciu {pos}")
+                    user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_odchod_user_{idx}")
+                    hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_odchod_hour_{idx}")
+                    minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_odchod_minute_{idx}")
+                    if st.button(f"Uložiť odchod ({pos})", key=f"{pos}_odchod_save_{idx}"):
+                        ts = tz.localize(datetime.combine(selected_day, time(hour,minute)))
+                        save_attendance(user_code, pos, "Odchod", ts)
+                        st.success("Záznam uložený ✅")
+                        st.experimental_rerun()
 
     # ====== Týždenný prehľad matrix ======
     st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
@@ -298,3 +288,32 @@ else:
             file_name=f"dochadzka_{monday}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+# ======= Nespárované / duplicitné záznamy posledné 2 týždne =======
+start_2w = today - timedelta(days=14)
+start_dt_2w = tz.localize(datetime.combine(start_2w, time(0,0)))
+end_dt_2w = tz.localize(datetime.combine(today + timedelta(days=1), time(0,0)))
+df_2w = load_attendance(start_dt_2w, end_dt_2w)
+
+df_2w_summary = []
+for pos in POSITIONS:
+    pos_df = df_2w[df_2w["position"] == pos]
+    pairs = get_user_pairs(pos_df)
+    for user, pair in pairs.items():
+        pr_count = pair["pr_count"]
+        od_count = pair["od_count"]
+        if pr_count != 1 or od_count != 1:
+            df_2w_summary.append({
+                "position": pos,
+                "user_code": user,
+                "pr_count": pr_count,
+                "od_count": od_count,
+                "first_pr": pair["pr"],
+                "last_od": pair["od"]
+            })
+
+if df_2w_summary:
+    st.header("⚠️ Nespárované / duplicitné záznamy – posledné 2 týždne")
+    st.dataframe(pd.DataFrame(df_2w_summary))
+else:
+    st.info("V posledných 2 týždňoch nie sú žiadne nespárované alebo duplicitné záznamy.")
