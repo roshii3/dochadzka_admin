@@ -1,3 +1,5 @@
+# admin_attendance_full_v2.py
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, time, timedelta
@@ -47,7 +49,6 @@ def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     df["time"] = df["timestamp"].dt.time
     return df
 
-
 def get_user_pairs(pos_day_df: pd.DataFrame):
     pairs = {}
     if pos_day_df.empty:
@@ -60,7 +61,6 @@ def get_user_pairs(pos_day_df: pd.DataFrame):
         od_max = od.max() if not od.empty else pd.NaT
         pairs[user] = {"pr": pr_min, "od": od_max}
     return pairs
-
 
 def classify_pair(pr, od, position):
     msgs = []
@@ -84,7 +84,6 @@ def classify_pair(pr, od, position):
         return ("none","Poobedna OK",0.0, SHIFT_HOURS,msgs)
     msgs.append("invalid_times")
     return ("invalid","invalid",0.0,0.0,msgs)
-
 
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
     morning = {"status":"absent","hours":0.0,"detail":None}
@@ -115,7 +114,6 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
                 details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
     return morning, afternoon, details
 
-
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
     for pos in POSITIONS:
@@ -135,18 +133,14 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
-
-# ✅ len tu sa mení zápis času na UTC
 def save_attendance(user_code, position, action, timestamp):
-    timestamp_utc = timestamp.astimezone(pytz.utc)
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
         "action": action,
-        "timestamp": timestamp_utc.isoformat()
+        "timestamp": timestamp.isoformat()
     }).execute()
     return True
-
 
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
     wb = Workbook()
@@ -212,6 +206,7 @@ else:
     st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
     cols = st.columns(3)
     day_details_rows = []
+
     for i, pos in enumerate(POSITIONS):
         col = cols[i % 3]
         info = summary[pos]
@@ -223,6 +218,7 @@ else:
         if info["details"]:
             for d in info["details"]:
                 col.error(d)
+
         day_details_rows.append({
             "position": pos,
             "morning_status": m['status'],
@@ -234,7 +230,7 @@ else:
             "total_hours": info['total_hours']
         })
 
-        # ✅ tu doplnené — možnosť opraviť Príchod aj Odchod
+        # ================== UPRAVA PRÍCHOD/ODCHOD ==================
         for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
             if "missing" in stat.lower():
                 st.markdown(f"#### Opraviť {act} pre pozíciu {pos}")
@@ -243,8 +239,8 @@ else:
                 minute = st.select_slider("Minúta", options=[0,30], key=f"{pos}_{act}_minute")
                 if st.button(f"Uložiť {act} ({pos})", key=f"{pos}_{act}_save"):
                     ts = datetime.combine(selected_day, time(hour,minute))
-                    ts = tz.localize(ts)
-                    save_attendance(user_code, pos, act, ts)
+                    ts_utc = tz.localize(ts).astimezone(pytz.utc)  # Ukladanie v UTC
+                    save_attendance(user_code, pos, act, ts_utc)
                     st.success("Záznam uložený ✅")
                     st.experimental_rerun()
 
