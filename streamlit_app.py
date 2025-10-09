@@ -133,12 +133,15 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
+
 def save_attendance(user_code, position, action, timestamp):
+    # timestamp je timezone-aware datetime
+    ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"  # trim na milisekundy a pridaj +00
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
         "action": action,
-        "timestamp": timestamp.isoformat()
+        "timestamp": ts_str
     }).execute()
     return True
 
