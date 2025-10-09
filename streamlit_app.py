@@ -26,8 +26,8 @@ st.markdown(hide_css, unsafe_allow_html=True)
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
 ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
-
 databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
+
 tz = pytz.timezone("Europe/Bratislava")
 
 POSITIONS = ["Veliteľ","CCTV","Brány","Sklad2","Sklad3","Turniket2","Turniket3","Plombovac2","Plombovac3"]
@@ -230,20 +230,19 @@ else:
             "total_hours": info['total_hours']
         })
 
-        # ================== UPRAVA PRÍCHOD/ODCHOD ==================
+        # ================= NOVÁ ČASŤ: Doplnit / opravit príchod/odchod =================
         for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
-            if "missing" in stat.lower():
+            if stat in ("missing_pr","missing_od","invalid"):
                 st.markdown(f"#### Opraviť {act} pre pozíciu {pos}")
                 user_code = st.text_input(f"User code pre {act} ({pos})", value="USER123456", key=f"{pos}_{act}_user")
-                hour = st.select_slider("Hodina", options=list(range(6,23,2)), key=f"{pos}_{act}_hour")
-                minute = st.select_slider("Minúta", options=[0,30], key=f"{pos}_{act}_minute")
+                hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_{act}_hour")
+                minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_{act}_minute")
                 if st.button(f"Uložiť {act} ({pos})", key=f"{pos}_{act}_save"):
                     ts = datetime.combine(selected_day, time(hour,minute))
-                    ts_utc = tz.localize(ts).astimezone(pytz.utc)  # Ukladanie v UTC
-                    save_attendance(user_code, pos, act, ts_utc)
+                    ts = tz.localize(ts)
+                    save_attendance(user_code, pos, act, ts)
                     st.success("Záznam uložený ✅")
                     st.experimental_rerun()
-
     # ====== Týždenný prehľad matrix ======
     st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
     days = [monday + timedelta(days=i) for i in range(7)]
