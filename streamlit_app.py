@@ -26,8 +26,8 @@ st.markdown(hide_css, unsafe_allow_html=True)
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
 DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
 ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
-databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 
+databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 tz = pytz.timezone("Europe/Bratislava")
 
 POSITIONS = ["Veliteľ","CCTV","Brány","Sklad2","Sklad3","Turniket2","Turniket3","Plombovac2","Plombovac3"]
@@ -212,6 +212,7 @@ else:
         info = summary[pos]
         m = info["morning"]
         p = info["afternoon"]
+
         col.markdown(f"### **{pos}**")
         col.markdown(f"**Ranná:** {m['status']} — {m['hours']} h")
         col.markdown(f"**Poobedná:** {p['status']} — {p['hours']} h")
@@ -230,19 +231,31 @@ else:
             "total_hours": info['total_hours']
         })
 
-        # ================= NOVÁ ČASŤ: Doplnit / opravit príchod/odchod =================
-        for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
-            if stat in ("missing_pr","missing_od","invalid"):
-                st.markdown(f"#### Opraviť {act} pre pozíciu {pos}")
-                user_code = st.text_input(f"User code pre {act} ({pos})", value="USER123456", key=f"{pos}_{act}_user")
-                hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_{act}_hour")
-                minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_{act}_minute")
-                if st.button(f"Uložiť {act} ({pos})", key=f"{pos}_{act}_save"):
+        # ======= NOVÉ: Oprava / doplnenie chýbajúcich príchodov a odchodov =======
+        for d in info["details"]:
+            if "missing_prichod" in d:
+                st.markdown(f"#### Doplniť chýbajúci PRÍCHOD pre pozíciu {pos}")
+                user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_prichod_user")
+                hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_prichod_hour")
+                minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_prichod_minute")
+                if st.button(f"Uložiť príchod ({pos})", key=f"{pos}_prichod_save"):
                     ts = datetime.combine(selected_day, time(hour,minute))
                     ts = tz.localize(ts)
-                    save_attendance(user_code, pos, act, ts)
+                    save_attendance(user_code, pos, "Príchod", ts)
                     st.success("Záznam uložený ✅")
                     st.experimental_rerun()
+            if "missing_odchod" in d:
+                st.markdown(f"#### Doplniť chýbajúci ODCHOD pre pozíciu {pos}")
+                user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_odchod_user")
+                hour = st.select_slider("Hodina", options=list(range(6,23,1)), key=f"{pos}_odchod_hour")
+                minute = st.select_slider("Minúta", options=[0,15,30,45], key=f"{pos}_odchod_minute")
+                if st.button(f"Uložiť odchod ({pos})", key=f"{pos}_odchod_save"):
+                    ts = datetime.combine(selected_day, time(hour,minute))
+                    ts = tz.localize(ts)
+                    save_attendance(user_code, pos, "Odchod", ts)
+                    st.success("Záznam uložený ✅")
+                    st.experimental_rerun()
+
     # ====== Týždenný prehľad matrix ======
     st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
     days = [monday + timedelta(days=i) for i in range(7)]
