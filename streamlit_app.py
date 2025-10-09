@@ -1,26 +1,143 @@
 import streamlit as st
-from datetime import datetime, date, time
+import pandas as pd
+from datetime import datetime, date, time, timedelta
 import pytz
-from supabase import create_client
+from supabase import create_client, Client
+from io import BytesIO
+from openpyxl.styles import PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl import Workbook
 
-# ----------------------------
-# KONFIGURÁCIA
-# ----------------------------
-st.set_page_config(page_title="Attendance Editor", layout="wide")
+# ================== CONFIG ==================
+st.set_page_config(page_title="Admin - Dochádzka", layout="wide", initial_sidebar_state="expanded")
 
-# Supabase konfigurácia (zmeň podľa seba)
-SUPABASE_URL = "https://tvoja_supabase_url.supabase.co"
-SUPABASE_KEY = "tvoj_supabase_key"
+hide_css = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+st.markdown(hide_css, unsafe_allow_html=True)
 
-databaze = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ================== SECRETS ==================
+DATABAZA_URL = st.secrets["DATABAZA_URL"]
+DATABAZA_KEY = st.secrets["DATABAZA_KEY"]
+ADMIN_PASS = st.secrets.get("ADMIN_PASS", "")
+
+databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 tz = pytz.timezone("Europe/Bratislava")
 
-# ----------------------------
-# FUNKCIE
-# ----------------------------
+POSITIONS = ["Veliteľ","CCTV","Brány","Sklad2","Sklad3","Turniket2","Turniket3","Plombovac2","Plombovac3"]
+SHIFT_HOURS = 7.5
+DOUBLE_SHIFT_HOURS = 15.25
+VELITEL_DOUBLE = 16.25
 
+# ================== HELPERS ==================
+def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+    res = databaze.table("attendance").select("*")\
+        .gte("timestamp", start_dt.isoformat())\
+        .lt("timestamp", end_dt.isoformat()).execute()
+    df = pd.DataFrame(res.data)
+    if df.empty:
+        return df
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["timestamp"] = df["timestamp"].apply(lambda x: tz.localize(x) if pd.notna(x) and x.tzinfo is None else x)
+    df["date"] = df["timestamp"].dt.date
+    df["time"] = df["timestamp"].dt.time
+    return df
+
+
+def get_user_pairs(pos_day_df: pd.DataFrame):
+    pairs = {}
+    if pos_day_df.empty:
+        return pairs
+    for user in pos_day_df["user_code"].unique():
+        u = pos_day_df[pos_day_df["user_code"] == user]
+        pr = u[u["action"].str.lower() == "príchod"]["timestamp"]
+        od = u[u["action"].str.lower() == "odchod"]["timestamp"]
+        pr_min = pr.min() if not pr.empty else pd.NaT
+        od_max = od.max() if not od.empty else pd.NaT
+        pairs[user] = {"pr": pr_min, "od": od_max}
+    return pairs
+
+
+def classify_pair(pr, od, position):
+    msgs = []
+    if (pd.isna(pr) or pr is None) and (pd.isna(od) or od is None):
+        return ("none","none",0.0,0.0, msgs)
+    if pd.isna(pr) or pr is None:
+        msgs.append("missing_prichod")
+        return ("missing_pr", "none",0.0,0.0, msgs)
+    if pd.isna(od) or od is None:
+        msgs.append("missing_odchod")
+        return ("none","missing_od",0.0,0.0, msgs)
+    pr_t = pr.time(); od_t = od.time()
+    if position.lower().startswith("vel"):
+        if pr_t <= time(7,0) and (od_t >= time(21,0) or od_t < time(2,0)):
+            return ("R+P OK","R+P OK", VELITEL_DOUBLE, VELITEL_DOUBLE, msgs)
+    if pr_t <= time(7,0) and (od_t >= time(21,0) or od_t < time(2,0)):
+        return ("R+P OK","R+P OK", DOUBLE_SHIFT_HOURS, DOUBLE_SHIFT_HOURS, msgs)
+    if pr_t <= time(7,0) and od_t <= time(15,0):
+        return ("Ranna OK","none", SHIFT_HOURS,0.0,msgs)
+    if pr_t >= time(13,0) and od_t >= time(21,0):
+        return ("none","Poobedna OK",0.0, SHIFT_HOURS,msgs)
+    msgs.append("invalid_times")
+    return ("invalid","invalid",0.0,0.0,msgs)
+
+
+def summarize_position_day(pos_day_df: pd.DataFrame, position):
+    morning = {"status":"absent","hours":0.0,"detail":None}
+    afternoon = {"status":"absent","hours":0.0,"detail":None}
+    details = []
+    if pos_day_df.empty:
+        return morning, afternoon, details
+    pairs = get_user_pairs(pos_day_df)
+    rp_user = None
+    for user, pair in pairs.items():
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "R+P OK" and role_p == "R+P OK":
+            rp_user = (user, pair, h_m, h_p)
+            break
+    if rp_user:
+        user, pair, h_m, h_p = rp_user
+        morning = {"status":"R+P OK", "hours": h_m, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        afternoon = {"status":"R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        return morning, afternoon, details
+    for user, pair in pairs.items():
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK","R+P OK"):
+            morning = {"status":"Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK","R+P OK"):
+            afternoon = {"status":"Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if msgs:
+            for m in msgs:
+                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
+    return morning, afternoon, details
+
+
+def summarize_day(df_day: pd.DataFrame, target_date: date):
+    results = {}
+    for pos in POSITIONS:
+        pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
+        morning, afternoon, details = summarize_position_day(pos_df, pos)
+        if morning["status"] == "R+P OK" and afternoon["status"] == "R+P OK":
+            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
+        elif morning["status"] in ("Ranna OK","R+P OK") and afternoon["status"] in ("Poobedna OK","R+P OK"):
+            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
+        else:
+            total = morning.get("hours",0.0) + afternoon.get("hours",0.0)
+        results[pos] = {
+            "morning": morning,
+            "afternoon": afternoon,
+            "details": details,
+            "total_hours": total
+        }
+    return results
+
+
+# ✅ len tu sa mení zápis času na UTC
 def save_attendance(user_code, position, action, timestamp):
-    """Uloží príchod/odchod do DB v UTC formáte"""
     timestamp_utc = timestamp.astimezone(pytz.utc)
     databaze.table("attendance").insert({
         "user_code": user_code,
@@ -31,85 +148,130 @@ def save_attendance(user_code, position, action, timestamp):
     return True
 
 
-def summarize_position_day(user_records):
-    """Zistí, či chýba príchod alebo odchod"""
-    result = {"arrival": {"status": "OK", "timestamp": None},
-              "departure": {"status": "OK", "timestamp": None}}
+def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Týždenný prehľad"
+    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index":"Pozícia"}), index=False, header=True):
+        ws1.append(r)
+    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1+len(df_matrix.columns), max_row=1+len(df_matrix)):
+        for cell in row:
+            val = cell.value
+            if isinstance(val,(int,float)):
+                cell.fill = green
+            elif isinstance(val,str) and val.strip().startswith("⚠"):
+                cell.fill = yellow
+            elif val == "—":
+                pass
+    ws2 = wb.create_sheet("Denné - detail")
+    for r in dataframe_to_rows(df_day_details, index=False, header=True):
+        ws2.append(r)
+    ws3 = wb.create_sheet("Surové dáta")
+    for r in dataframe_to_rows(df_raw, index=False, header=True):
+        ws3.append(r)
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
 
-    arrivals = [r for r in user_records if r["action"].lower() == "príchod"]
-    departures = [r for r in user_records if r["action"].lower() == "odchod"]
+# ================== APP ==================
+st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
-    if not arrivals:
-        result["arrival"]["status"] = "MISSING_ARRIVAL"
-    else:
-        result["arrival"]["timestamp"] = arrivals[0]["timestamp"]
+if "admin_logged" not in st.session_state:
+    st.session_state.admin_logged = False
+if not st.session_state.admin_logged:
+    st.sidebar.header("Admin prihlásenie")
+    pw = st.sidebar.text_input("Heslo", type="password")
+    if st.sidebar.button("Prihlásiť"):
+        if ADMIN_PASS and pw == ADMIN_PASS:
+            st.session_state.admin_logged = True
+            st.experimental_rerun()
+        else:
+            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
+    if not st.session_state.admin_logged:
+        st.stop()
 
-    if not departures:
-        result["departure"]["status"] = "MISSING_DEPARTURE"
-    else:
-        result["departure"]["timestamp"] = departures[-1]["timestamp"]
+today = datetime.now(tz).date()
+week_ref = st.sidebar.date_input("Vyber deň v týždni (týždeň začína pondelkom):", value=today)
+monday = week_ref - timedelta(days=week_ref.weekday())
+start_dt = datetime.combine(monday, time(0,0))
+end_dt = start_dt + timedelta(days=7)
+start_dt = tz.localize(start_dt)
+end_dt = tz.localize(end_dt)
+df_week = load_attendance(start_dt, end_dt)
+selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=today, min_value=monday, max_value=monday+timedelta(days=6))
+df_day = df_week[df_week["date"] == selected_day]
 
-    return result
-
-
-def load_records_for_day(selected_day):
-    """Načíta záznamy pre daný deň"""
-    start = datetime.combine(selected_day, time(0, 0)).astimezone(pytz.utc).isoformat()
-    end = datetime.combine(selected_day, time(23, 59)).astimezone(pytz.utc).isoformat()
-    data = databaze.table("attendance").select("*").gte("timestamp", start).lte("timestamp", end).execute()
-    return data.data if data.data else []
-
-
-# ----------------------------
-# UI
-# ----------------------------
-
-st.title("🕓 Attendance Editor")
-selected_day = st.date_input("Vyber deň", value=date.today())
-
-records = load_records_for_day(selected_day)
-
-if not records:
-    st.info("Žiadne záznamy pre tento deň.")
+if df_week.empty:
+    st.warning("Rozsah nie je dostupný v DB (žiadne dáta pre vybraný týždeň).")
 else:
-    st.write(f"Načítaných záznamov: **{len(records)}**")
+    summary = summarize_day(df_day, selected_day)
+    st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
+    cols = st.columns(3)
+    day_details_rows = []
+    for i, pos in enumerate(POSITIONS):
+        col = cols[i % 3]
+        info = summary[pos]
+        m = info["morning"]
+        p = info["afternoon"]
+        col.markdown(f"### **{pos}**")
+        col.markdown(f"**Ranná:** {m['status']} — {m['hours']} h")
+        col.markdown(f"**Poobedná:** {p['status']} — {p['hours']} h")
+        if info["details"]:
+            for d in info["details"]:
+                col.error(d)
+        day_details_rows.append({
+            "position": pos,
+            "morning_status": m['status'],
+            "morning_hours": m.get('hours',0),
+            "morning_detail": m.get('detail') or "-",
+            "afternoon_status": p['status'],
+            "afternoon_hours": p.get('hours',0),
+            "afternoon_detail": p.get('detail') or "-",
+            "total_hours": info['total_hours']
+        })
 
-# Vytvor prehľad podľa pozície
-positions = sorted(list(set(r["position"] for r in records)))
-
-for pos in positions:
-    pos_records = [r for r in records if r["position"] == pos]
-    summary = summarize_position_day(pos_records)
-    m = summary["arrival"]
-    p = summary["departure"]
-
-    st.markdown(f"### 📍 Pozícia: {pos}")
-
-    if m["timestamp"]:
-        st.write(f"**Príchod:** {m['timestamp']}")
-    else:
-        st.warning("❌ Chýba príchod")
-
-    if p["timestamp"]:
-        st.write(f"**Odchod:** {p['timestamp']}")
-    else:
-        st.warning("❌ Chýba odchod")
-
-    # Možnosť doplniť príchod / odchod
-    for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
-        if "missing" in stat.lower():
-            with st.expander(f"🛠 Opraviť {act} pre pozíciu {pos}"):
-                user_code = st.text_input(
-                    f"User code pre {act} ({pos})",
-                    value="USER123456",
-                    key=f"{pos}_{act}_user"
-                )
-                hour = st.select_slider("Hodina", options=list(range(0, 24)), key=f"{pos}_{act}_hour")
-                minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{pos}_{act}_minute")
-
-                if st.button(f"💾 Uložiť {act} ({pos})", key=f"{pos}_{act}_save"):
-                    ts = datetime.combine(selected_day, time(hour, minute))
-                    ts = tz.localize(ts)  # lokalizuj na Bratislavu
+        # ✅ tu doplnené — možnosť opraviť Príchod aj Odchod
+        for act, stat in [("Príchod", m["status"]), ("Odchod", p["status"])]:
+            if "missing" in stat.lower():
+                st.markdown(f"#### Opraviť {act} pre pozíciu {pos}")
+                user_code = st.text_input(f"User code pre {act} ({pos})", value="USER123456", key=f"{pos}_{act}_user")
+                hour = st.select_slider("Hodina", options=list(range(6,23,2)), key=f"{pos}_{act}_hour")
+                minute = st.select_slider("Minúta", options=[0,30], key=f"{pos}_{act}_minute")
+                if st.button(f"Uložiť {act} ({pos})", key=f"{pos}_{act}_save"):
+                    ts = datetime.combine(selected_day, time(hour,minute))
+                    ts = tz.localize(ts)
                     save_attendance(user_code, pos, act, ts)
-                    st.success(f"{act} uložený do databázy (UTC) ✅")
+                    st.success("Záznam uložený ✅")
                     st.experimental_rerun()
+
+    # ====== Týždenný prehľad matrix ======
+    st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
+    days = [monday + timedelta(days=i) for i in range(7)]
+    cols_matrix = [d.strftime("%a %d.%m") for d in days]
+    matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
+    for d in days:
+        df_d = df_week[df_week["date"] == d]
+        summ = summarize_day(df_d, d)
+        for pos in POSITIONS:
+            matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if summ[pos]["total_hours"]>0 else "—"
+    matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x,(int,float)) else 0 for x in row), axis=1)
+    st.dataframe(matrix.fillna("—"), use_container_width=True)
+
+    # Export Excel
+    if st.button("Exportuj Excel (Farebné)"):
+        df_matrix = matrix.reset_index().rename(columns={"index":"position"})
+        df_day_details = pd.DataFrame(day_details_rows)
+        df_raw = df_week.copy()
+        if "timestamp" in df_raw.columns:
+            df_raw["timestamp"] = df_raw["timestamp"].apply(lambda x: x.isoformat() if pd.notna(x) else "")
+        xls = excel_with_colors(df_matrix, df_day_details, df_raw, monday)
+        st.download_button(
+            "Stiahnuť XLSX",
+            data=xls,
+            file_name=f"dochadzka_{monday}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
