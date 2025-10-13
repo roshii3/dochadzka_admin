@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
 
@@ -52,32 +52,29 @@ def load_attendance(start_dt, end_dt):
 
 # ---------- PAIRING ----------
 def get_user_pairs(pos_day_df: pd.DataFrame):
-    """Vytvorí všetky páry príchod/odchod, vrátane nesparovaných zápisov"""
+    """Vytvorí všetky páry príchod/odchod pre každého používateľa, vrátane nesparovaných zápisov"""
     pairs = []
     if pos_day_df.empty:
         return pairs
 
-    prichody_ts = pos_day_df[pos_day_df["action"].str.lower() == "príchod"].sort_values("timestamp")["timestamp"].tolist()
-    odchody_ts = pos_day_df[pos_day_df["action"].str.lower() == "odchod"].sort_values("timestamp")["timestamp"].tolist()
-    
-    used_odchody = [False]*len(odchody_ts)
+    # zoradíme podľa timestamp
+    df_sorted = pos_day_df.sort_values("timestamp")
+    users = df_sorted["user_code"].unique()
 
-    # Sparovanie príchodov s nasledujúcim odchodom
-    for pr in prichody_ts:
-        od = None
-        for i, od_ts in enumerate(odchody_ts):
-            if not used_odchody[i] and od_ts > pr:
-                od = od_ts
-                used_odchody[i] = True
-                break
-        pairs.append({"pr": pr, "od": od})
-
-    # Zostávajúce odchody bez príchodu
-    for i, od_ts in enumerate(odchody_ts):
-        if not used_odchody[i]:
-            pairs.append({"pr": None, "od": od_ts})
-
-    return pairs
+    for user in users:
+        user_df = df_sorted[df_sorted["user_code"] == user]
+        actions = list(user_df[["action", "timestamp"]].itertuples(index=False, name=None))
+        stack_pr = []
+        for action, ts in actions:
+            if action.lower() == "príchod":
+                stack_pr.append(ts)
+            elif action.lower() == "odchod":
+                pr_ts = stack_pr.pop(0) if stack_pr else None
+                pairs.append({"user": user, "pr": pr_ts, "od": ts})
+        # zostávajúce príchody bez odchodu
+        for pr_ts in stack_pr:
+            pairs.append({"user": user, "pr": pr_ts, "od": None})
+    return sorted(pairs, key=lambda x: (x["pr"] if x["pr"] else datetime.max))
 
 # ---------- DISPLAY ----------
 st.title("🕒 Prehľad dochádzky - Veliteľ")
@@ -105,6 +102,9 @@ else:
                 st.write("— žiadne záznamy —")
                 continue
             pairs = get_user_pairs(pos_df)
+            if not pairs:
+                st.write("— žiadne záznamy —")
+                continue
             for p in pairs:
                 pr = p["pr"].strftime("%H:%M") if p["pr"] else "—"
                 od = p["od"].strftime("%H:%M") if p["od"] else "—"
