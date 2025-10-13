@@ -1,7 +1,7 @@
-# streamlit_velitel_clean.py
+# streamlit_velitel_all_entries.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 import pytz
 from supabase import create_client, Client
 
@@ -52,19 +52,17 @@ def load_attendance(start_dt, end_dt):
     return df
 
 # ---------- SPRACOVANIE ZÁZNAMOV ----------
-def summarize_position(pos_df):
+def all_entries(pos_df):
+    """
+    Vráti všetky príchody a odchody pre danú pozíciu, zoradené podľa času.
+    """
     if pos_df.empty:
         return []
-    # rozdelíme podľa akcie
-    arrivals = pos_df[pos_df["action"].str.lower() == "príchod"].sort_values("timestamp")["timestamp"].tolist()
-    departures = pos_df[pos_df["action"].str.lower() == "odchod"].sort_values("timestamp")["timestamp"].tolist()
-    
-    result = []
-    while arrivals or departures:
-        pr = arrivals.pop(0) if arrivals else None
-        od = departures.pop(0) if departures else None
-        result.append((pr, od))
-    return result
+    df_sorted = pos_df.sort_values("timestamp")
+    entries = []
+    for _, row in df_sorted.iterrows():
+        entries.append((row["action"], row["timestamp"]))
+    return entries
 
 # ---------- ZOBRAZENIE DÁT ----------
 st.title("🕒 Prehľad dochádzky - Veliteľ")
@@ -87,11 +85,10 @@ else:
         for pos in POSITIONS:
             pos_df = df_day[df_day["position"] == pos]
             st.markdown(f"**{pos}**")
-            pairs = summarize_position(pos_df)
-            if not pairs:
+            entries = all_entries(pos_df)
+            if not entries:
                 st.write("— žiadne záznamy —")
             else:
-                for pr, od in pairs:
-                    pr_str = pr.strftime("%H:%M") if pr else "—"
-                    od_str = od.strftime("%H:%M") if od else "—"
-                    st.write(f"➡️ Príchod: {pr_str} | Odchod: {od_str}")
+                for action, timestamp in entries:
+                    ts_str = timestamp.strftime("%H:%M") if pd.notna(timestamp) else "—"
+                    st.write(f"➡️ {action}: {ts_str}")
