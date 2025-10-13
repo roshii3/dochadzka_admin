@@ -145,6 +145,43 @@ def save_attendance(user_code, position, action, now=None):
         "valid": True
     }).execute()
     return True
+
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from datetime import timedelta
+from io import BytesIO
+
+def add_chip_sheet(wb: 'Workbook', day_details_rows: list, monday: date):
+    """
+    Pridá nový sheet "Rozpis čipov" do existujúceho workbooku.
+    day_details_rows: list of dict, každý dict obsahuje keys:
+        position, shift, morning_user, afternoon_user
+    monday: prvý deň týždňa
+    """
+    ws = wb.create_sheet("Rozpis čipov")
+    
+    # Header
+    days = ["pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"]
+    header = ["position","shift"] + days
+    ws.append(header)
+    
+    # Naplnenie dát podľa day_details_rows
+    for row in day_details_rows:
+        position = row["position"]
+        shift = row["shift"]
+        values = []
+        for i in range(7):
+            day_date = monday + timedelta(days=i)
+            if shift == "06:00-14_00":
+                user_code = row.get("morning_user", "")
+            else:
+                user_code = row.get("afternoon_user", "")
+            values.append(user_code or "")
+        ws.append([position, shift] + values)
+    
+    return wb
+
+
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
@@ -181,55 +218,35 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
 
     # --- Sheet 4: Rozpis čipov ---
     ws4 = wb.create_sheet("Rozpis čipov")
-    template = [
-        ["position","shift","pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"],
-        ["Veliteľ","06:00-14_00","","","","","","",""],
-        ["Veliteľ","14:00-22:00","","","","","","",""],
-        ["Turniket3","06:00-14_00","","","","","","",""],
-        ["Turniket3","14:00-22:00","","","","","","",""],
-        ["Brány","06:00-14_00","","","","","","",""],
-        ["Brány","14:00-22:00","","","","","","",""],
-        ["Turniket2","06:00-14_00","","","","","","",""],
-        ["Turniket2","14:00-22:00","","","","","","",""],
-        ["Sklad2","06:00-14_00","","","","","","",""],
-        ["Sklad2","14:00-22:00","","","","","","",""],
-        ["Plombovac2","06:00-14_00","","","","","","",""],
-        ["Plombovac2","14:00-22:00","","","","","","",""],
-        ["Plombovac3","06:00-14_00","","","","","","",""],
-        ["Plombovac3","14:00-22:00","","","","","","",""],
-        ["CCTV","06:00-14_00","","","","","","",""],
-        ["CCTV","14:00-22:00","","","","","","",""],
-        ["Sklad3","06:00-14_00","","","","","","",""],
-        ["Sklad3","14:00-22:00","","","","","","",""]
-    ]
-    for row in template:
-        ws4.append(row)
+    days = ["pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"]
+    header = ["position","shift"] + days
+    ws4.append(header)
 
-    # --- Naplnenie čipov ---
-    for i, row in enumerate(template[1:], start=2):
-        pos = row[0]
-        shift = row[1]
-        for j in range(7):
-            day_date = monday + timedelta(days=j)
-            day_details_filtered = df_day_details[
-                (df_day_details['position'] == pos) &
-                (((shift=="06:00-14_00") & (df_day_details['morning_status'].isin(["Ranna OK","R+P OK"]))) |
-                 ((shift=="14:00-22_00") & (df_day_details['afternoon_status'].isin(["Poobedna OK","R+P OK"]))))
-            ]
-            user_codes = []
-            for _, det in day_details_filtered.iterrows():
-                detail_text = det['morning_detail'] if shift=="06:00-14_00" else det['afternoon_detail']
-                if detail_text and detail_text != "-":
-                    parts = detail_text.split(":", 1)
-                    if parts:
-                        user_code = parts[0].strip()
-                        user_codes.append(user_code)
-            ws4.cell(row=i, column=j+3, value=", ".join(user_codes) if user_codes else "")
+    for det in df_day_details.to_dict(orient="records"):
+        position = det["position"]
+        shift = det["morning_status"] if det.get("morning_status") else det.get("afternoon_status")
+        row = [position, det["morning_hours"] if shift=="06:00-14_00" else det["afternoon_hours"]]
+        row_values = []
+        for i in range(7):
+            # Zistíme user_code pre danú smenu
+            if shift=="06:00-14_00":
+                detail_text = det.get("morning_detail","")
+            else:
+                detail_text = det.get("afternoon_detail","")
+            if detail_text and detail_text != "-":
+                parts = detail_text.split(":",1)
+                user_code = parts[0].strip() if parts else ""
+            else:
+                user_code = ""
+            row_values.append(user_code)
+        ws4.append([position, shift] + row_values)
 
     out = BytesIO()
     wb.save(out)
     out.seek(0)
     return out
+
+
 
 
 
