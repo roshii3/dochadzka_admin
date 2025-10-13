@@ -303,7 +303,7 @@ else:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-start_2w = today - timedelta(days=14)
+start_2w = today - timedelta(days=7)
 start_dt_2w = tz.localize(datetime.combine(start_2w, time(0,0)))
 end_dt_2w = tz.localize(datetime.combine(today + timedelta(days=1), time(0,0)))
 df_2w = load_attendance(start_dt_2w, end_dt_2w)
@@ -325,5 +325,5 @@ for pos in POSITIONS:
                 "last_od": pair["od"]
             })
 if df_2w_summary:
-    st.subheader("⚠️ Upozornenia — viacnásobné záznamy za 14 dní")
+    st.subheader("⚠️ Upozornenia — viacnásobné záznamy za 7 dní")
     st.dataframe(pd.DataFrame(df_2w_summary))
