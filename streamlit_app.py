@@ -145,7 +145,7 @@ def save_attendance(user_code, position, action, now=None):
         "valid": True
     }).execute()
     return True
-
+    
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
     wb = Workbook()
     ws1 = wb.active
@@ -153,6 +153,8 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+
+    # --- Sheet 1: Týždenný prehľad ---
     for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index":"Pozícia"}), index=False, header=True):
         ws1.append(r)
     for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1+len(df_matrix.columns), max_row=1+len(df_matrix)):
@@ -164,16 +166,76 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
                 cell.fill = yellow
             elif val == "—":
                 pass
+
+    # --- Sheet 2: Denné - detail ---
     ws2 = wb.create_sheet("Denné - detail")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
         ws2.append(r)
+
+    # --- Sheet 3: Surové dáta ---
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
+
+    # --- Sheet 4: Rozpis čipov ---
+    ws4 = wb.create_sheet("Rozpis čipov")
+    # Tvoja template tabuľka
+    template = [
+        ["position","shift","pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"],
+        ["Veliteľ","06:00-14_00","","","","","","",""],
+        ["Veliteľ","14:00-22:00","","","","","","",""],
+        ["Turniket3","06:00-14_00","","","","","","",""],
+        ["Turniket3","14:00-22:00","","","","","","",""],
+        ["Brány","06:00-14_00","","","","","","",""],
+        ["Brány","14:00-22:00","","","","","","",""],
+        ["Turniket2","06:00-14_00","","","","","","",""],
+        ["Turniket2","14:00-22:00","","","","","","",""],
+        ["Sklad2","06:00-14_00","","","","","","",""],
+        ["Sklad2","14:00-22:00","","","","","","",""],
+        ["Plombovac2","06:00-14_00","","","","","","",""],
+        ["Plombovac2","14:00-22:00","","","","","","",""],
+        ["Plombovac3","06:00-14_00","","","","","","",""],
+        ["Plombovac3","14:00-22:00","","","","","","",""],
+        ["CCTV","06:00-14_00","","","","","","",""],
+        ["CCTV","14:00-22:00","","","","","","",""],
+        ["Sklad3","06:00-14_00","","","","","","",""],
+        ["Sklad3","14:00-22:00","","","","","","",""]
+    ]
+
+    # Naplnenie sheetu
+    for row in template:
+        ws4.append(row)
+
+    # Mapovanie dní na index stĺpca
+    day_cols = { (monday + timedelta(days=i)).strftime("%A"): i+3 for i in range(7) }  # +3 kvôli pozícia+shift
+
+    # Pre každý deň a pozíciu doplníme user_code podľa df_day_details
+    for i, row in enumerate(template[1:], start=2):  # preskočíme header
+        pos = row[0]
+        shift = row[1]
+        for j in range(7):
+            day_date = monday + timedelta(days=j)
+            # Hľadáme z df_day_details užívateľa na túto pozíciu a shift
+            day_details_filtered = df_day_details[
+                (df_day_details['position']==pos) &
+                (((shift=="06:00-14_00") & (df_day_details['morning_status'].isin(["Ranna OK","R+P OK"]))) |
+                 ((shift=="14:00-22:00") & (df_day_details['afternoon_status'].isin(["Poobedna OK","R+P OK"]))))
+            ]
+            # vyberieme first user_code z detailu
+            user_codes = []
+            for _, det in day_details_filtered.iterrows():
+                detail_text = det['morning_detail'] if shift=="06:00-14_00" else det['afternoon_detail']
+                if detail_text and detail_text != "-":
+                    # detail má formát "USER123: Príchod: ..., Odchod: ..."
+                    user_codes.append(detail_text.split(":")[0])
+            ws4.cell(row=i, column=j+3, value=", ".join(user_codes) if user_codes else "")
+
+    # --- Export do BytesIO ---
     out = BytesIO()
     wb.save(out)
     out.seek(0)
     return out
+
 
 # ================== APP ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
