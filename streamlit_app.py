@@ -146,7 +146,6 @@ def save_attendance(user_code, position, action, now=None):
 
 # ================== EXPORT EXCEL S ČIPMI ==================
 def get_chip_assignments(df_raw: pd.DataFrame, monday):
-    """ Vygeneruje mapovanie (pozícia, smena, deň) -> [user_codes]. """
     assignments = {}
     if df_raw.empty: return assignments
     df_raw["timestamp"] = pd.to_datetime(df_raw["timestamp"], errors="coerce")
@@ -176,14 +175,12 @@ def get_chip_assignments(df_raw: pd.DataFrame, monday):
     return assignments
 
 def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
-    """ Vytvorí farebný Excel so 4 sheetmi: Týždenný prehľad, Denné-detail, Surové dáta, Rozpis čipov """
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "Týždenný prehľad"
     green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 
-    # --- SHEET 1 ---
     for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
         ws1.append(r)
     for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
@@ -192,29 +189,22 @@ def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
             if isinstance(val, (int, float)): cell.fill = green
             elif isinstance(val, str) and val.strip().startswith("⚠"): cell.fill = yellow
 
-    # --- SHEET 2 ---
     ws2 = wb.create_sheet("Denné - detail")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
         ws2.append(r)
 
-    # --- SHEET 3 ---
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
 
-    # --- SHEET 4 ---
     ws4 = wb.create_sheet("Rozpis čipov")
     days = ["pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"]
-    header = ["position","shift"] + days
-    ws4.append(header)
+    ws4.append(["position","shift"] + days)
     chip_map = get_chip_assignments(df_raw, monday)
     POSITIONS_ = sorted(df_raw["position"].unique())
     for pos in POSITIONS_:
         for shift in ["06:00-14_00","14:00-22:00"]:
-            row_vals = []
-            for i in range(7):
-                users = chip_map.get((pos, shift, i), [])
-                row_vals.append(", ".join(users) if users else "")
+            row_vals = [", ".join(chip_map.get((pos, shift, i), [])) for i in range(7)]
             ws4.append([pos, shift] + row_vals)
 
     for col in ws4.columns:
@@ -225,3 +215,26 @@ def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
     wb.save(out)
     out.seek(0)
     return out
+
+# ================== STREAMLIT UI ==================
+st.title("Admin - Dochádzka")
+password = st.text_input("Heslo:", type="password")
+if password != ADMIN_PASS:
+    st.warning("Nesprávne heslo")
+    st.stop()
+
+today = datetime.now(tz).date()
+monday = today - timedelta(days=today.weekday())
+end_of_week = monday + timedelta(days=7)
+
+df_raw = load_attendance(datetime.combine(monday, time()), datetime.combine(end_of_week, time()))
+st.write(f"Dáta od {monday} do {end_of_week}")
+st.dataframe(df_raw)
+
+# --- Export ---
+if st.button("Export Excel"):
+    # prehľad, detail a matica pre ilustráciu
+    df_matrix = pd.DataFrame({pos: [0]*7 for pos in POSITIONS}, index=["pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"])
+    df_day_details = pd.DataFrame(df_raw)  # môžeš upraviť podľa detailov
+    excel_bytes = excel_with_colors(df_matrix, df_day_details, df_raw, monday)
+    st.download_button("Stiahni Excel", data=excel_bytes, file_name=f"dochadzka_{monday}.xlsx")
