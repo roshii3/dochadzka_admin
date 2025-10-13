@@ -145,7 +145,6 @@ def save_attendance(user_code, position, action, now=None):
         "valid": True
     }).execute()
     return True
-
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
@@ -157,7 +156,6 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     ws1 = wb.active
     ws1.title = "Týždenný prehľad"
     green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    red = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 
     # --- Sheet 1: Týždenný prehľad ---
@@ -170,8 +168,6 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
                 cell.fill = green
             elif isinstance(val,str) and val.strip().startswith("⚠"):
                 cell.fill = yellow
-            elif val == "—":
-                pass
 
     # --- Sheet 2: Denné - detail ---
     ws2 = wb.create_sheet("Denné - detail")
@@ -185,7 +181,6 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
 
     # --- Sheet 4: Rozpis čipov ---
     ws4 = wb.create_sheet("Rozpis čipov")
-    # Tvoja template tabuľka
     template = [
         ["position","shift","pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"],
         ["Veliteľ","06:00-14_00","","","","","","",""],
@@ -210,33 +205,31 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     for row in template:
         ws4.append(row)
 
-    # Naplnenie sheetu
-    for i, row in enumerate(template[1:], start=2):  # preskočíme header
+    # --- Naplnenie čipov ---
+    for i, row in enumerate(template[1:], start=2):
         pos = row[0]
         shift = row[1]
         for j in range(7):
             day_date = monday + timedelta(days=j)
-            # Hľadáme z df_day_details užívateľa na túto pozíciu a shift
             day_details_filtered = df_day_details[
-                (df_day_details['position']==pos) &
+                (df_day_details['position'] == pos) &
                 (((shift=="06:00-14_00") & (df_day_details['morning_status'].isin(["Ranna OK","R+P OK"]))) |
-                 ((shift=="14:00-22:00") & (df_day_details['afternoon_status'].isin(["Poobedna OK","R+P OK"]))))
+                 ((shift=="14:00-22_00") & (df_day_details['afternoon_status'].isin(["Poobedna OK","R+P OK"]))))
             ]
             user_codes = []
             for _, det in day_details_filtered.iterrows():
                 detail_text = det['morning_detail'] if shift=="06:00-14_00" else det['afternoon_detail']
                 if detail_text and detail_text != "-":
-                    # detail má formát "USER123456: Príchod: ..., Odchod: ..."
-                    user_code = detail_text.split(":")[0].strip()
-                    user_codes.append(user_code)
+                    parts = detail_text.split(":", 1)
+                    if parts:
+                        user_code = parts[0].strip()
+                        user_codes.append(user_code)
             ws4.cell(row=i, column=j+3, value=", ".join(user_codes) if user_codes else "")
 
-    # --- Export do BytesIO ---
     out = BytesIO()
     wb.save(out)
     out.seek(0)
     return out
-
 
 
 
