@@ -1,7 +1,7 @@
-# streamlit_velitel_shifts.py
+# streamlit_velitel.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 import pytz
 from supabase import create_client, Client
 
@@ -51,23 +51,23 @@ def load_attendance(start_dt, end_dt):
     df["date"] = df["timestamp"].dt.date
     return df
 
-# ---------- SPRACOVANIE ZÁZNAMOV ----------
-def label_shift(ts: datetime):
-    """Označí príchod/odchod ako Ranná alebo Poobedná podľa času"""
-    if ts.time() < time(12,0):
-        return "Ranná"
-    else:
-        return "Poobedná"
-
-def all_entries_with_shifts(pos_df: pd.DataFrame):
-    """Vráti všetky príchody a odchody so štítkom smeny"""
+# ---------- FUNKCIE PRE VÝPIS ----------
+def all_entries_verbose(pos_df: pd.DataFrame):
+    """
+    Vráti všetky príchody a odchody pre pozíciu,
+    chronologicky, bez spájania smien, so štítkom Ranná/Poobedná.
+    """
     if pos_df.empty:
         return []
+
     df_sorted = pos_df.sort_values("timestamp")
     entries = []
     for _, row in df_sorted.iterrows():
-        shift = label_shift(row["timestamp"])
-        entries.append((shift, row["action"], row["timestamp"]))
+        action = row["action"]
+        ts = row["timestamp"]
+        shift_label = "Ranná" if ts.time() < time(12,0) else "Poobedná"
+        ts_str = ts.strftime("%H:%M") if pd.notna(ts) else "—"
+        entries.append(f"➡️ {shift_label} {action}: {ts_str}")
     return entries
 
 # ---------- ZOBRAZENIE DÁT ----------
@@ -89,12 +89,11 @@ else:
             st.write("— žiadne záznamy —")
             continue
         for pos in POSITIONS:
-            pos_df = df_day[df_day["position"] == pos]
             st.markdown(f"**{pos}**")
-            entries = all_entries_with_shifts(pos_df)
+            pos_df = df_day[df_day["position"] == pos]
+            entries = all_entries_verbose(pos_df)
             if not entries:
                 st.write("— žiadne záznamy —")
             else:
-                for shift, action, timestamp in entries:
-                    ts_str = timestamp.strftime("%H:%M") if pd.notna(timestamp) else "—"
-                    st.write(f"➡️ {shift} {action}: {ts_str}")
+                for e in entries:
+                    st.write(e)
