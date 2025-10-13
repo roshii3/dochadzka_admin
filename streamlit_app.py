@@ -1,7 +1,7 @@
-# streamlit_velitel_all_entries.py
+# streamlit_velitel_shifts.py
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import pytz
 from supabase import create_client, Client
 
@@ -52,16 +52,22 @@ def load_attendance(start_dt, end_dt):
     return df
 
 # ---------- SPRACOVANIE ZÁZNAMOV ----------
-def all_entries(pos_df):
-    """
-    Vráti všetky príchody a odchody pre danú pozíciu, zoradené podľa času.
-    """
+def label_shift(ts: datetime):
+    """Označí príchod/odchod ako Ranná alebo Poobedná podľa času"""
+    if ts.time() < time(12,0):
+        return "Ranná"
+    else:
+        return "Poobedná"
+
+def all_entries_with_shifts(pos_df: pd.DataFrame):
+    """Vráti všetky príchody a odchody so štítkom smeny"""
     if pos_df.empty:
         return []
     df_sorted = pos_df.sort_values("timestamp")
     entries = []
     for _, row in df_sorted.iterrows():
-        entries.append((row["action"], row["timestamp"]))
+        shift = label_shift(row["timestamp"])
+        entries.append((shift, row["action"], row["timestamp"]))
     return entries
 
 # ---------- ZOBRAZENIE DÁT ----------
@@ -85,10 +91,10 @@ else:
         for pos in POSITIONS:
             pos_df = df_day[df_day["position"] == pos]
             st.markdown(f"**{pos}**")
-            entries = all_entries(pos_df)
+            entries = all_entries_with_shifts(pos_df)
             if not entries:
                 st.write("— žiadne záznamy —")
             else:
-                for action, timestamp in entries:
+                for shift, action, timestamp in entries:
                     ts_str = timestamp.strftime("%H:%M") if pd.notna(timestamp) else "—"
-                    st.write(f"➡️ {action}: {ts_str}")
+                    st.write(f"➡️ {shift} {action}: {ts_str}")
