@@ -1,5 +1,3 @@
-# admin_attendance_full_v3.py
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date, time, timedelta
@@ -197,12 +195,31 @@ if not st.session_state.admin_logged:
 
 # --- Výber týždňa a dňa ---
 today = datetime.now(tz).date()
-week_ref = st.sidebar.date_input("Vyber deň v týždni (týždeň začína pondelkom):", value=today)
+
+week_ref = st.sidebar.date_input(
+    "Vyber deň v týždni (týždeň začína pondelkom):",
+    value=today
+)
+
 monday = week_ref - timedelta(days=week_ref.weekday())
-start_dt = tz.localize(datetime.combine(monday, time(0,0)))
-end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0,0)))
+start_dt = tz.localize(datetime.combine(monday, time(0, 0)))
+end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0, 0)))
 df_week = load_attendance(start_dt, end_dt)
-selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=today, min_value=monday, max_value=monday+timedelta(days=6))
+
+# 🔧 Oprava chyby + zobrazenie rozsahu týždňa
+if monday <= today <= monday + timedelta(days=6):
+    default_day = today
+else:
+    default_day = monday
+
+st.sidebar.markdown(f"📆 Zobrazuje sa týždeň: **{monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')}**")
+
+selected_day = st.sidebar.date_input(
+    "Denný prehľad - vyber deň",
+    value=default_day,
+    min_value=monday,
+    max_value=monday + timedelta(days=6)
+)
 df_day = df_week[df_week["date"] == selected_day]
 
 if df_week.empty:
@@ -237,7 +254,6 @@ else:
             "total_hours": info['total_hours']
         })
 
-        # ======= Doplnenie chýbajúcich záznamov iba pre predchádzajúce dni =======
         if selected_day < today:
             for idx, d in enumerate(info["details"]):
                 if "missing_prichod" in d:
@@ -261,7 +277,6 @@ else:
                         st.success("Záznam uložený ✅")
                         st.experimental_rerun()
 
-    # ====== Týždenný prehľad matrix ======
     st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
     days = [monday + timedelta(days=i) for i in range(7)]
     cols_matrix = [d.strftime("%a %d.%m") for d in days]
@@ -274,7 +289,6 @@ else:
     matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x,(int,float)) else 0 for x in row), axis=1)
     st.dataframe(matrix.fillna("—"), use_container_width=True)
 
-    # Export Excel
     if st.button("Exportuj Excel (Farebné)"):
         df_matrix = matrix.reset_index().rename(columns={"index":"position"})
         df_day_details = pd.DataFrame(day_details_rows)
@@ -289,7 +303,6 @@ else:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# ======= Nespárované / duplicitné záznamy posledné 2 týždne =======
 start_2w = today - timedelta(days=14)
 start_dt_2w = tz.localize(datetime.combine(start_2w, time(0,0)))
 end_dt_2w = tz.localize(datetime.combine(today + timedelta(days=1), time(0,0)))
@@ -311,9 +324,6 @@ for pos in POSITIONS:
                 "first_pr": pair["pr"],
                 "last_od": pair["od"]
             })
-
 if df_2w_summary:
-    st.header("⚠️ Nespárované / duplicitné záznamy – posledné 2 týždne")
+    st.subheader("⚠️ Upozornenia — viacnásobné záznamy za 14 dní")
     st.dataframe(pd.DataFrame(df_2w_summary))
-else:
-    st.info("V posledných 2 týždňoch nie sú žiadne nespárované alebo duplicitné záznamy.")
