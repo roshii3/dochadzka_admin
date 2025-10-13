@@ -145,8 +145,14 @@ def save_attendance(user_code, position, action, now=None):
         "valid": True
     }).execute()
     return True
-    
+
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from io import BytesIO
+    from datetime import timedelta
+
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "Týždenný prehľad"
@@ -201,15 +207,10 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
         ["Sklad3","06:00-14_00","","","","","","",""],
         ["Sklad3","14:00-22:00","","","","","","",""]
     ]
-
-    # Naplnenie sheetu
     for row in template:
         ws4.append(row)
 
-    # Mapovanie dní na index stĺpca
-    day_cols = { (monday + timedelta(days=i)).strftime("%A"): i+3 for i in range(7) }  # +3 kvôli pozícia+shift
-
-    # Pre každý deň a pozíciu doplníme user_code podľa df_day_details
+    # Naplnenie sheetu
     for i, row in enumerate(template[1:], start=2):  # preskočíme header
         pos = row[0]
         shift = row[1]
@@ -221,13 +222,13 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
                 (((shift=="06:00-14_00") & (df_day_details['morning_status'].isin(["Ranna OK","R+P OK"]))) |
                  ((shift=="14:00-22:00") & (df_day_details['afternoon_status'].isin(["Poobedna OK","R+P OK"]))))
             ]
-            # vyberieme first user_code z detailu
             user_codes = []
             for _, det in day_details_filtered.iterrows():
                 detail_text = det['morning_detail'] if shift=="06:00-14_00" else det['afternoon_detail']
                 if detail_text and detail_text != "-":
-                    # detail má formát "USER123: Príchod: ..., Odchod: ..."
-                    user_codes.append(detail_text.split(":")[0])
+                    # detail má formát "USER123456: Príchod: ..., Odchod: ..."
+                    user_code = detail_text.split(":")[0].strip()
+                    user_codes.append(user_code)
             ws4.cell(row=i, column=j+3, value=", ".join(user_codes) if user_codes else "")
 
     # --- Export do BytesIO ---
@@ -235,6 +236,8 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     wb.save(out)
     out.seek(0)
     return out
+
+
 
 
 # ================== APP ==================
