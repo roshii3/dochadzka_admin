@@ -188,7 +188,7 @@ def save_attendance(user_code, pos, status, ts=None):
     }
 
     try:
-        db.table("dochadzka").insert(record).execute()
+        db.table("attendance").insert(record).execute()
         print(f"✅ Úspešne uložené: {ts_str}")
     except Exception as e:
         print(f"❌ Chyba pri ukladaní záznamu: {e}")
