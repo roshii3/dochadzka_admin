@@ -169,8 +169,6 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
-from datetime import datetime, timezone
-import pytz
 
 def save_attendance(user_code, pos, status, ts=None):
     """
@@ -188,11 +186,10 @@ def save_attendance(user_code, pos, status, ts=None):
     }
 
     try:
-        db.table("attendance").insert(record).execute()
+        databaze.table("attendance").insert(record).execute()  # <-- tu bolo db -> teraz databaze
         print(f"✅ Úspešne uložené: {ts_str}")
     except Exception as e:
         print(f"❌ Chyba pri ukladaní záznamu: {e}")
-
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
