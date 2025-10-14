@@ -169,21 +169,20 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
-
-
 from datetime import datetime, timezone
 import pytz
 
-def save_attendance(user_id, status, db):
+def save_attendance(user_code, pos, status, ts=None):
     """
     Uloží záznam o príchode alebo odchode do databázy s presným timestampom (vrátane mikrosekúnd).
     """
     tz = pytz.timezone("UTC")
-    now = datetime.now(tz)  # aktuálny čas v UTC
-    ts_str = now.isoformat()  # uloží napr. 2025-10-14T13:46:13.972178+00:00
+    now = ts if ts else datetime.now(tz)
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f+00")  # rovnaký formát ako v employee app
 
     record = {
-        "user_id": user_id,
+        "user_code": user_code,
+        "pos": pos,
         "status": status,
         "timestamp": ts_str
     }
@@ -193,6 +192,7 @@ def save_attendance(user_id, status, db):
         print(f"✅ Úspešne uložené: {ts_str}")
     except Exception as e:
         print(f"❌ Chyba pri ukladaní záznamu: {e}")
+
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
