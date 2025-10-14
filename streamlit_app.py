@@ -170,23 +170,29 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
-def save_attendance(user_code, position, action, now=None):
-    """Uloží príchod/odchod do tabuľky attendance (Supabase)."""
-    user_code = user_code.strip()
-    if not now:
-        now = datetime.now(tz)
-        if now.second == 0 and now.microsecond == 0:
-            current = datetime.now(tz)
-            now = now.replace(second=current.second, microsecond=current.microsecond)
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
-    databaze.table("attendance").insert({
-        "user_code": user_code,
-        "position": position,
-        "action": action,
-        "timestamp": ts_str,
-        "valid": True
-    }).execute()
-    return True
+
+from datetime import datetime, timezone
+import pytz
+
+def save_attendance(user_id, status, db):
+    """
+    Uloží záznam o príchode alebo odchode do databázy s presným timestampom (vrátane mikrosekúnd).
+    """
+    tz = pytz.timezone("UTC")
+    now = datetime.now(tz)  # aktuálny čas v UTC
+    ts_str = now.isoformat()  # uloží napr. 2025-10-14T13:46:13.972178+00:00
+
+    record = {
+        "user_id": user_id,
+        "status": status,
+        "timestamp": ts_str
+    }
+
+    try:
+        db.table("dochadzka").insert(record).execute()
+        print(f"✅ Úspešne uložené: {ts_str}")
+    except Exception as e:
+        print(f"❌ Chyba pri ukladaní záznamu: {e}")
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
