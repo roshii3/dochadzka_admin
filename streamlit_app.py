@@ -169,35 +169,42 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
             "total_hours": total
         }
     return results
+def save_attendance(user_code: str, pos: str, action: str, ts: datetime = None):
+    """
+    Uloží záznam do tabuľky 'attendance' v Supabase,
+    presne podľa toho, ako to používa QR appka.
+    """
+    user_code = user_code.strip()
+    if not user_code:
+        st.error("⚠️ Chýba user_code!")
+        return False
 
-def save_attendance(user_code: str, pos: str, status: str, ts: datetime = None):
-    """
-    Uloží záznam o príchode alebo odchode do tabuľky 'attendance' v Supabase.
-    Používa tz-aware datetime (Europe/Bratislava) a správny formát pre Supabase.
-    """
+    ts = ts or datetime.now(tz)
+
+    # validácia času (podľa QR app logiky)
+    def valid_time(action_name, now_dt):
+        if action_name == "Príchod":
+            return (time(5,0) <= now_dt.time() <= time(7,0)) or (time(13,0) <= now_dt.time() <= time(15,0))
+        else:
+            return (time(13,30) <= now_dt.time() <= time(15,0)) or (time(21,0) <= now_dt.time() <= time(23,0))
+
+    is_valid = valid_time(action, ts)
+
     try:
-        # čas: ak nie je zadaný, vezmeme teraz
-        local_tz = pytz.timezone("Europe/Bratislava")
-        ts = ts or datetime.now(local_tz)
-
-        # pripravíme záznam
-        record = {
+        databaza.table("attendance").insert({
             "user_code": user_code,
-            "pos": pos,
-            "status": status,
-            "timestamp": ts.isoformat()  # tz-aware ISO string
-        }
-
-        # insert do Supabase
-        databaze.table("attendance").insert(record).execute()
-
-        # úspech
-        st.success(f"✅ Záznam uložený: {user_code}, {pos}, {status} @ {ts.strftime('%d.%m.%Y %H:%M')}")
-        print(f"✅ Záznam uložený: {record}")
-
+            "position": pos,
+            "action": action,
+            "timestamp": ts.isoformat(),
+            "valid": is_valid
+        }).execute()
+        st.success(f"✅ Záznam uložený: {user_code}, {pos}, {action} ({'platný' if is_valid else 'mimo času'})")
+        return True
     except Exception as e:
-        st.error(f"❌ Chyba pri ukladaní záznamu: {e}")
-        print(f"❌ Chyba pri ukladaní: {e}")
+        st.error(f"❌ Chyba pri ukladaní: {e}")
+        return False
+
+
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
