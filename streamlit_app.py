@@ -170,26 +170,34 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
-def save_attendance(user_code, pos, status, ts=None):
+def save_attendance(user_code: str, pos: str, status: str, ts: datetime = None):
     """
-    Uloží záznam o príchode alebo odchode do databázy s presným timestampom (vrátane mikrosekúnd).
+    Uloží záznam o príchode alebo odchode do tabuľky 'attendance' v Supabase.
+    Používa tz-aware datetime (Europe/Bratislava) a správny formát pre Supabase.
     """
-    tz = pytz.timezone("UTC")
-    now = ts if ts else datetime.now(tz)
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f+00")  # rovnaký formát ako v employee app
-
-    record = {
-        "user_code": user_code,
-        "pos": pos,
-        "status": status,
-        "timestamp": ts_str
-    }
-
     try:
-        databaze.table("attendance").insert(record).execute()  # <-- tu bolo db -> teraz databaze
-        print(f"✅ Úspešne uložené: {ts_str}")
+        # čas: ak nie je zadaný, vezmeme teraz
+        local_tz = pytz.timezone("Europe/Bratislava")
+        ts = ts or datetime.now(local_tz)
+
+        # pripravíme záznam
+        record = {
+            "user_code": user_code,
+            "pos": pos,
+            "status": status,
+            "timestamp": ts.isoformat()  # tz-aware ISO string
+        }
+
+        # insert do Supabase
+        databaze.table("attendance").insert(record).execute()
+
+        # úspech
+        st.success(f"✅ Záznam uložený: {user_code}, {pos}, {status} @ {ts.strftime('%d.%m.%Y %H:%M')}")
+        print(f"✅ Záznam uložený: {record}")
+
     except Exception as e:
-        print(f"❌ Chyba pri ukladaní záznamu: {e}")
+        st.error(f"❌ Chyba pri ukladaní záznamu: {e}")
+        print(f"❌ Chyba pri ukladaní: {e}")
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
