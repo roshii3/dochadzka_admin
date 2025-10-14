@@ -174,16 +174,20 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
 
     return results
 
+
 def save_attendance(user_code, position, action, now=None):
-    """Uloží príchod/odchod do tabuľky attendance (Supabase)."""
+    """Uloží príchod/odchod do tabuľky attendance (Supabase) s presným timestampom."""
     user_code = user_code.strip()
     if not now:
         now = datetime.now(tz)
+    # ak je sekundová a mikrosekundová časť nulová, doplníme aktuálny čas
     if now.second == 0 and now.microsecond == 0:
         current = datetime.now(tz)
         now = now.replace(second=current.second, microsecond=current.microsecond)
 
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3] + "+00"
+    # uložíme v tvare: 2025-10-14 13:46:13.972178+00
+    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f") + "+00"
+
     databaze.table("attendance").insert({
         "user_code": user_code,
         "position": position,
