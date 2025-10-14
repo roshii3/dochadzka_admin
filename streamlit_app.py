@@ -358,30 +358,31 @@ else:
             "afternoon_detail": p.get('detail') or "-",
             "total_hours": info['total_hours']
         })
-
-        # ak ide o minulý deň, zobrazíme formuláre na doplnenie chýbajúcich záznamov
+        # --- Dopĺňanie chýbajúcich záznamov ---
         if selected_day < today and info["details"]:
             for idx, d in enumerate(info["details"]):
                 if "missing_prichod" in d:
                     st.markdown(f"#### Doplniť chýbajúci PRÍCHOD pre pozíciu {pos}")
-                    user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_prichod_user_{idx}")
+                    user_code_input = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_prichod_user_{idx}")
                     hour = st.select_slider("Hodina", options=list(range(6, 23, 1)), key=f"{pos}_prichod_hour_{idx}")
                     minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{pos}_prichod_minute_{idx}")
                     if st.button(f"Uložiť príchod ({pos})", key=f"{pos}_prichod_save_{idx}"):
                         ts = tz.localize(datetime.combine(selected_day, time(hour, minute)))
-                        save_attendance(user_code, pos, "Príchod", ts)
-                        st.success("Záznam uložený ✅")
+                        save_attendance(user_code_input, pos, "Príchod", ts)
                         st.experimental_rerun()
+    
                 if "missing_odchod" in d:
                     st.markdown(f"#### Doplniť chýbajúci ODCHOD pre pozíciu {pos}")
-                    user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_odchod_user_{idx}")
+                    user_code_input = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_odchod_user_{idx}")
                     hour = st.select_slider("Hodina", options=list(range(6, 23, 1)), key=f"{pos}_odchod_hour_{idx}")
                     minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{pos}_odchod_minute_{idx}")
                     if st.button(f"Uložiť odchod ({pos})", key=f"{pos}_odchod_save_{idx}"):
                         ts = tz.localize(datetime.combine(selected_day, time(hour, minute)))
-                        save_attendance(user_code, pos, "Odchod", ts)
-                        st.success("Záznam uložený ✅")
+                        save_attendance(user_code_input, pos, "Odchod", ts)
                         st.experimental_rerun()
+
+        
+        
 
     # ================== Týždenný prehľad ==================
     st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
