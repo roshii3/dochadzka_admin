@@ -198,22 +198,73 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
-from io import BytesIO
-import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
-from datetime import date
+from datetime import timedelta, time
+from io import BytesIO
+import pandas as pd
 
-def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
+
+def get_chip_assignments(df_raw: pd.DataFrame, monday):
+    """
+    Vygeneruje mapovanie (pozícia, smena, deň) -> [user_codes].
+    """
+    assignments = {}
+    if df_raw.empty:
+        return assignments
+
+    df_raw["timestamp"] = pd.to_datetime(df_raw["timestamp"], errors="coerce")
+    df_raw["date"] = df_raw["timestamp"].dt.date
+
+    for pos in df_raw["position"].unique():
+        pos_df = df_raw[df_raw["position"] == pos]
+        for i in range(7):
+            d = monday + timedelta(days=i)
+            day_df = pos_df[pos_df["date"] == d]
+            if day_df.empty:
+                continue
+            pairs = get_user_pairs(day_df)
+            for user, pair in pairs.items():
+                if pd.isna(pair["pr"]) or pd.isna(pair["od"]):
+                    continue
+                pr_t = pair["pr"].time()
+                od_t = pair["od"].time()
+
+                # Ranná
+                if pr_t <= time(7, 0) and od_t <= time(15, 0):
+                    shift = "06:00-14_00"
+                # Poobedná
+                elif pr_t >= time(13, 0) and od_t >= time(21, 0):
+                    shift = "14:00-22:00"
+                # Dvojitá
+                elif pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
+                    assignments[(pos, "06:00-14_00", i)] = assignments.get((pos, "06:00-14_00", i), []) + [user]
+                    assignments[(pos, "14:00-22:00", i)] = assignments.get((pos, "14:00-22:00", i), []) + [user]
+                    continue
+                else:
+                    continue
+
+                assignments[(pos, shift, i)] = assignments.get((pos, shift, i), []) + [user]
+    return assignments
+
+
+
+def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
+    """
+    Vytvorí farebný Excel so 4 sheetmi:
+    - Týždenný prehľad
+    - Denné - detail
+    - Surové dáta
+    - Rozpis čipov
+    """
     wb = Workbook()
-
-    # --- Sheet 1: Týždenný prehľad ---
     ws1 = wb.active
     ws1.title = "Týždenný prehľad"
     green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 
+    # === SHEET 1: Týždenný prehľad ===
     for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
         ws1.append(r)
 
@@ -225,54 +276,43 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
             elif isinstance(val, str) and val.strip().startswith("⚠"):
                 cell.fill = yellow
 
-    # --- Sheet 2: Denné - detail ---
+    # === SHEET 2: Denné - detail ===
     ws2 = wb.create_sheet("Denné - detail")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
         ws2.append(r)
 
-    # --- Sheet 3: Surové dáta ---
+    # === SHEET 3: Surové dáta ===
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
 
-    # --- Sheet 4: Rozpis čipov ---
+    # === SHEET 4: Rozpis čipov ===
     ws4 = wb.create_sheet("Rozpis čipov")
     days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
     header = ["position", "shift"] + days
     ws4.append(header)
 
-    for det in df_day_details.to_dict(orient="records"):
-        position = det.get("position", "")
-        # Vybereme shift podľa dostupnosti rannej/popoldňajšej smeny
-        shift = det.get("morning_status") if det.get("morning_status") else det.get("afternoon_status")
-        row_values = []
+    chip_map = get_chip_assignments(df_raw, monday)
+    POSITIONS = sorted(df_raw["position"].unique())
 
-        for i in range(7):
-            # pre každý deň vyberieme detail podľa shiftu
-            if shift and (shift.lower().startswith("ranna") or shift == "06:00-14_00"):
-                detail_text = det.get("morning_detail", "")
-            else:
-                detail_text = det.get("afternoon_detail", "")
+    for pos in POSITIONS:
+        for shift in ["06:00-14_00", "14:00-22:00"]:
+            row_vals = []
+            for i in range(7):
+                users = chip_map.get((pos, shift, i), [])
+                row_vals.append(", ".join(users) if users else "")
+            ws4.append([pos, shift] + row_vals)
 
-            user_code = ""
-            if detail_text and detail_text != "-":
-                parts = detail_text.split(":", 1)
-                if parts:
-                    user_code = parts[0].strip()
-
-            row_values.append(user_code)
-
-        ws4.append([position, shift] + row_values)
-
-    # Center align Rozpis čipov
     for col in ws4.columns:
         for cell in col:
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
+    # --- Uloženie ---
     out = BytesIO()
     wb.save(out)
     out.seek(0)
     return out
+
 
 
 # ================== STREAMLIT UI ==================
