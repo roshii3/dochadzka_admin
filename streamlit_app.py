@@ -486,62 +486,61 @@ for d in days_2w:
 if df_2w_summary:
     st.subheader("⚠️ Upozornenia — viacnásobné záznamy za 7 dní")
     st.dataframe(pd.DataFrame(df_2w_summary))
-st.header("⚡ Doplniť chýbajúce smeny za posledné 2 týždne")
+# --- posledných 5 dní (okrem dneška) ---
+start_5d = today - timedelta(days=5)
+start_dt_5d = tz.localize(datetime.combine(start_5d, time(0, 0)))
+end_dt_5d = tz.localize(datetime.combine(today, time(0, 0)))  # dnes nerátame
+df_5d = load_attendance(start_dt_5d, end_dt_5d)
 
-two_weeks_ago = today - timedelta(days=4)
-df_2w = [two_weeks_ago + timedelta(days=i) for i in range(1, 4)]  # okrem dneška
+df_5d_summary = []
+for pos in POSITIONS:
+    pos_df = df_5d[df_5d["position"] == pos] if not df_5d.empty else pd.DataFrame()
+    pairs = get_user_pairs(pos_df)
+    for user, pair in pairs.items():
+        pr_count = pair["pr_count"]
+        od_count = pair["od_count"]
+        if pr_count != 1 or od_count != 1:
+            df_5d_summary.append({
+                "position": pos,
+                "user_code": user,
+                "pr_count": pr_count,
+                "od_count": od_count,
+                "first_pr": pair["pr"],
+                "last_od": pair["od"]
+            })
 
-missing_shifts = []
+if df_5d_summary:
+    st.subheader("⚠️ Upozornenia — nekompletné smeny za posledných 5 dní")
+    summary_df = pd.DataFrame(df_5d_summary)
+    st.dataframe(summary_df)
 
-for d in days_2w:
-    df_day_2w = df_2w[df_2w["date"] == d]
-    summary_2w = summarize_day(df_day_2w, d)
-    for pos in POSITIONS:
-        morning = summary_2w[pos]["morning"]
-        afternoon = summary_2w[pos]["afternoon"]
+    # --- formulár na doplnenie smeny ---
+    st.markdown("### 📝 Doplniť chýbajúce smeny")
+    for idx, row in summary_df.iterrows():
+        missing_pr = row["pr_count"] != 1
+        missing_od = row["od_count"] != 1
+        position = row["position"]
+        user_code_default = row["user_code"]
+        day = row["first_pr"].date() if pd.notna(row["first_pr"]) else row["last_od"].date() if pd.notna(row["last_od"]) else start_5d
 
-        if morning["status"] in ("absent", "none"):
-            missing_shifts.append({"date": d, "position": pos, "shift": "Ranná"})
-        if afternoon["status"] in ("absent", "none"):
-            missing_shifts.append({"date": d, "position": pos, "shift": "Poobedná"})
+        if missing_pr:
+            st.markdown(f"#### Doplniť ranný príchod — {position} ({day})")
+            user_code = st.text_input(f"User code (príchod) — {position} ({idx})", value=user_code_default, key=f"{position}_pr_{idx}")
+            hour = st.select_slider("Hodina", options=list(range(6, 15)), key=f"{position}_pr_hour_{idx}")
+            minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{position}_pr_minute_{idx}")
+            if st.button(f"Uložiť príchod — {position} ({idx})", key=f"{position}_pr_save_{idx}"):
+                ts = tz.localize(datetime.combine(day, time(hour, minute)))
+                save_attendance(user_code, position, "Príchod", ts)
+                st.success("Príchod uložený ✅")
+                st.experimental_rerun()
 
-if missing_shifts:
-    st.info(f"Nájdené {len(missing_shifts)} chýbajúce smeny za posledné 2 týždne")
-
-    for idx, rec in enumerate(missing_shifts):
-        pos = rec["position"]
-        d = rec["date"]
-        shift = rec["shift"]
-
-        # posledný čip pre pozíciu
-        res = databaze.table("attendance").select("user_code").eq("position", pos).order("timestamp", desc=True).limit(1).execute()
-        last_user_code = res.data[0]["user_code"] if res.data else "USER123456"
-
-        st.markdown(f"### {shift} — {pos} — {d.strftime('%A %d.%m.%Y')}")
-
-        user_code = st.text_input(f"User code ({pos})", value=last_user_code, key=f"user_{pos}_{idx}")
-
-        if shift == "Ranná":
-            default_pr = time(6,0)
-            default_od = time(14,0)
-        else:
-            default_pr = time(14,0)
-            default_od = time(22,0)
-
-        pr_hour = st.select_slider("Hodina príchodu", options=list(range(6, 15)), value=default_pr.hour, key=f"pr_hour_{pos}_{idx}")
-        pr_min = st.select_slider("Minúta príchodu", options=[0,15,30,45], value=default_pr.minute, key=f"pr_min_{pos}_{idx}")
-
-        od_hour = st.select_slider("Hodina odchodu", options=list(range(14, 23)), value=default_od.hour, key=f"od_hour_{pos}_{idx}")
-        od_min = st.select_slider("Minúta odchodu", options=[0,15,30,45], value=default_od.minute, key=f"od_min_{pos}_{idx}")
-
-        if st.button(f"Uložiť smenu ({pos} - {shift})", key=f"save_shift_{pos}_{idx}"):
-            ts_pr = tz.localize(datetime.combine(d, time(pr_hour, pr_min)))
-            ts_od = tz.localize(datetime.combine(d, time(od_hour, od_min)))
-
-            save_attendance(user_code, pos, "Príchod", ts_pr)
-            save_attendance(user_code, pos, "Odchod", ts_od)
-
-            st.success(f"{shift} pre {pos} uložená ✅")
-            st.experimental_rerun()
-else:
-    st.info("Žiadne chýbajúce smeny za posledné 2 týždne.")
+        if missing_od:
+            st.markdown(f"#### Doplniť poobedný odchod — {position} ({day})")
+            user_code = st.text_input(f"User code (odchod) — {position} ({idx})", value=user_code_default, key=f"{position}_od_{idx}")
+            hour = st.select_slider("Hodina", options=list(range(14, 23)), key=f"{position}_od_hour_{idx}")
+            minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{position}_od_minute_{idx}")
+            if st.button(f"Uložiť odchod — {position} ({idx})", key=f"{position}_od_save_{idx}"):
+                ts = tz.localize(datetime.combine(day, time(hour, minute)))
+                save_attendance(user_code, position, "Odchod", ts)
+                st.success("Odchod uložený ✅")
+                st.experimental_rerun()
