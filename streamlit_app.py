@@ -198,91 +198,84 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
-def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill
+
+def get_user_pairs(pos_df):
+    pairs = {}
+    for _, row in pos_df.iterrows():
+        user = row['user_code']
+        pairs[user] = {"pr": row.get("arrival", ""), "od": row.get("departure", "")}
+    return pairs
+
+def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
     """
-    Vytvorí Excel s listami:
-    - Týždenný prehľad (farebne)
-    - Denné - detail
-    - Surové dáta
-    - Rozpis čipov (user_code per position/shift/day)
+    Vytvorí Excel so 4 sheets:
+    1) Rozpis čipov
+    2) df_matrix
+    3) df_day_details
+    4) df_raw
     """
-    from openpyxl import Workbook
-    from openpyxl.styles import PatternFill, Alignment
-    from openpyxl.utils.dataframe import dataframe_to_rows
-    from io import BytesIO
+
+    # Oprava kódovania pozícií
+    df_raw['position'] = df_raw['position'].str.encode('latin1').str.decode('utf-8')
+    df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'])
 
     wb = Workbook()
 
-    # --- Sheet 1: Týždenný prehľad ---
+    # --- Sheet 1: Rozpis čipov ---
     ws1 = wb.active
-    ws1.title = "Týždenný prehľad"
+    ws1.title = "Rozpis čipov"
 
-    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    dni = ['Pondelok', 'Utorok', 'Streda', 'Štvrtok', 'Piatok', 'Sobota', 'Nedeľa']
+    ws1.append(['Position', 'Shift'] + dni)
 
-    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
-        ws1.append(r)
+    green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
+    red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
 
-    # farebné označenie hodín a upozornení
-    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
-        for cell in row:
-            val = cell.value
-            if isinstance(val, (int, float)):
-                cell.fill = green
-            elif isinstance(val, str) and val.strip().startswith("⚠"):
-                cell.fill = yellow
-
-    # --- Sheet 2: Denné - detail ---
-    ws2 = wb.create_sheet("Denné - detail")
-    for r in dataframe_to_rows(df_day_details, index=False, header=True):
-        ws2.append(r)
-
-    # --- Sheet 3: Surové dáta ---
-    ws3 = wb.create_sheet("Surové dáta")
-    # doplníme date a time, ak neexistujú
-    if "date" not in df_raw.columns and "timestamp" in df_raw.columns:
-        df_raw["date"] = df_raw["timestamp"].apply(lambda x: x.date() if pd.notna(x) else "")
-        df_raw["time"] = df_raw["timestamp"].apply(lambda x: x.time() if pd.notna(x) else "")
-    for r in dataframe_to_rows(df_raw, index=False, header=True):
-        ws3.append(r)
-
-    # --- Sheet 4: Rozpis čipov ---
-    ws4 = wb.create_sheet("Rozpis čipov")
-    days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
-    header = ["position", "shift"] + days
-    ws4.append(header)
-
-    for det in df_day_details.to_dict(orient="records"):
-        position = det.get("position", "")
-        shift = det.get("morning_status") if det.get("morning_status") not in ("-", None) else det.get("afternoon_status")
-        row_values = []
+    for _, row in df_matrix.iterrows():
+        pozicia = row['position']
+        shift = row['shift']
+        row_values = [pozicia, shift]
 
         for i in range(7):
-            # vyber detail podľa rannej alebo poobednej smeny
-            if shift and shift.lower().startswith("ranna"):
-                detail_text = det.get("morning_detail", "")
+            day_date = monday + pd.Timedelta(days=i)
+            df_d = df_raw[(df_raw['position'] == pozicia) &
+                          (df_raw['timestamp'].dt.date == day_date.date()) &
+                          (df_raw['valid'] == True)]
+            if not df_d.empty:
+                user_code = df_d.sort_values('timestamp').iloc[-1]['user_code']
+                row_values.append(user_code)
             else:
-                detail_text = det.get("afternoon_detail", "")
+                row_values.append('absent')
 
-            user_code = ""
-            if detail_text and detail_text != "-":
-                # očakávame formát: "USER123456: Príchod ..."
-                parts = detail_text.split(":", 1)
-                if parts:
-                    user_code = parts[0].strip()
-            row_values.append(user_code)
+        ws1.append(row_values)
 
-        ws4.append([position, shift] + row_values)
+    # Farbenie
+    for row in ws1.iter_rows(min_row=2, min_col=3, max_col=9):
+        for cell in row:
+            cell.fill = green_fill if cell.value != 'absent' else red_fill
 
-    # centrovanie textu
-    for col in ws4.columns:
-        for cell in col:
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+    # --- Sheet 2: df_matrix ---
+    ws2 = wb.create_sheet("Matrix")
+    ws2.append(df_matrix.columns.tolist())
+    for r in df_matrix.itertuples(index=False):
+        ws2.append(list(r))
 
-    out = BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return out
+    # --- Sheet 3: df_day_details ---
+    ws3 = wb.create_sheet("Day Details")
+    ws3.append(df_day_details.columns.tolist())
+    for r in df_day_details.itertuples(index=False):
+        ws3.append(list(r))
+
+    # --- Sheet 4: df_raw ---
+    ws4 = wb.create_sheet("Raw Data")
+    ws4.append(df_raw.columns.tolist())
+    for r in df_raw.itertuples(index=False):
+        ws4.append(list(r))
+
+    return wb
 
 
 # ================== STREAMLIT UI ==================
