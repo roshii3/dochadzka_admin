@@ -466,7 +466,59 @@ for pos in POSITIONS:
                 "first_pr": pair["pr"],
                 "last_od": pair["od"]
             })
+st.header("⚡ Doplniť chýbajúce zmeny za posledné 2 týždne")
 
+two_weeks_ago = today - timedelta(days=14)
+days_2w = [two_weeks_ago + timedelta(days=i) for i in range(1, 14)]  # okrem dneška
+
+# nájdeme chýbajúce záznamy
+missing_records = []
+
+for d in days_2w:
+    df_day_2w = df_2w[df_2w["date"] == d]
+    summary_2w = summarize_day(df_day_2w, d)
+    for pos in POSITIONS:
+        details = summary_2w[pos]["details"]
+        if details:
+            for idx, det in enumerate(details):
+                if "missing_prichod" in det or "missing_odchod" in det:
+                    missing_records.append({"date": d, "position": pos, "detail": det, "idx": idx})
 if df_2w_summary:
     st.subheader("⚠️ Upozornenia — viacnásobné záznamy za 7 dní")
     st.dataframe(pd.DataFrame(df_2w_summary))
+    
+if missing_records:
+    st.info(f"Nájdené {len(missing_records)} chýbajúce záznamy za posledné 2 týždne")
+    for rec in missing_records:
+        pos = rec["position"]
+        idx = rec["idx"]
+        d = rec["date"]
+
+        # posledný čip pre pozíciu
+        res = databaze.table("attendance").select("user_code").eq("position", pos).order("timestamp", desc=True).limit(1).execute()
+        last_user_code = res.data[0]["user_code"] if res.data else "USER123456"
+
+        if "missing_prichod" in rec["detail"]:
+            st.markdown(f"### Doplniť PRÍCHOD — {pos} — {d.strftime('%A %d.%m.%Y')}")
+            user_code = st.text_input(f"User code ({pos})", value=last_user_code, key=f"pr_2w_{pos}_{idx}")
+            hour = st.select_slider("Hodina príchodu", options=list(range(6, 15)), value=6, key=f"pr_hour_{pos}_{idx}")
+            minute = st.select_slider("Minúta príchodu", options=[0,15,30,45], value=0, key=f"pr_min_{pos}_{idx}")
+            if st.button(f"Uložiť príchod ({pos})", key=f"pr_save_{pos}_{idx}"):
+                ts = tz.localize(datetime.combine(d, time(hour, minute)))
+                save_attendance(user_code, pos, "Príchod", ts)
+                st.success("Príchod uložený ✅")
+                st.experimental_rerun()
+
+        if "missing_odchod" in rec["detail"]:
+            st.markdown(f"### Doplniť ODCHOD — {pos} — {d.strftime('%A %d.%m.%Y')}")
+            user_code = st.text_input(f"User code ({pos})", value=last_user_code, key=f"od_2w_{pos}_{idx}")
+            hour = st.select_slider("Hodina odchodu", options=list(range(14, 23)), value=22, key=f"od_hour_{pos}_{idx}")
+            minute = st.select_slider("Minúta odchodu", options=[0,15,30,45], value=0, key=f"od_min_{pos}_{idx}")
+            if st.button(f"Uložiť odchod ({pos})", key=f"od_save_{pos}_{idx}"):
+                ts = tz.localize(datetime.combine(d, time(hour, minute)))
+                save_attendance(user_code, pos, "Odchod", ts)
+                st.success("Odchod uložený ✅")
+                st.experimental_rerun()
+else:
+    st.info("Žiadne chýbajúce záznamy za posledné 2 týždne.")
+
