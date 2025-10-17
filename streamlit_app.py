@@ -198,37 +198,22 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
-def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
-    """
-    Vytvorí Excel s listami:
-    - Týždenný prehľad (farebne)
-    - Denné - detail
-    - Surové dáta
-    - Rozpis čipov (user_code per position/shift/day)
-    """
+def excel_with_colors(df_raw, df_day_details, df_week, week_label):
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Alignment, Font
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from datetime import timedelta
+
     wb = Workbook()
 
     # --- Sheet 1: Týždenný prehľad ---
     ws1 = wb.active
     ws1.title = "Týždenný prehľad"
-
-    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-
-    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
+    for r in dataframe_to_rows(df_week, index=False, header=True):
         ws1.append(r)
 
-    # apply fills for numeric cells and warnings
-    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
-        for cell in row:
-            val = cell.value
-            if isinstance(val, (int, float)):
-                cell.fill = green
-            elif isinstance(val, str) and val.strip().startswith("⚠"):
-                cell.fill = yellow
-
-    # --- Sheet 2: Denné - detail ---
-    ws2 = wb.create_sheet("Denné - detail")
+    # --- Sheet 2: Denné detaily ---
+    ws2 = wb.create_sheet("Denné detaily")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
         ws2.append(r)
 
@@ -237,42 +222,65 @@ def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
 
-    # --- Sheet 4: Rozpis čipov ---
+    # --- Sheet 4: Rozpis čipov (opravené) ---
     ws4 = wb.create_sheet("Rozpis čipov")
     days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
     header = ["position", "shift"] + days
     ws4.append(header)
 
-    for det in df_day_details.to_dict(orient="records"):
-        position = det.get("position", "")
-        shift = det.get("morning_status") if det.get("morning_status") else det.get("afternoon_status")
-        row_values = []
+    # pomocná funkcia: nájde príchody/odchody pre daný deň
+    def get_user_pairs(df_day):
+        pairs = {}
+        for _, row in df_day.iterrows():
+            user = row["user_code"]
+            if user not in pairs:
+                pairs[user] = {"pr": row["arrival"], "od": row["departure"]}
+        return pairs
 
-        for i in range(7):
-            if shift == "06:00-14_00" or (shift and shift.lower().startswith("ranna")):
-                detail_text = det.get("morning_detail", "")
-            else:
-                detail_text = det.get("afternoon_detail", "")
+    monday = df_week["date"].min()
+    POSITIONS = sorted(df_week["position"].dropna().unique().tolist())
 
-            user_code = ""
-            if detail_text and detail_text != "-":
-                parts = detail_text.split(":", 1)
-                if parts:
-                    candidate = parts[0].strip()
-                    user_code = candidate
-            row_values.append(user_code)
+    for pos in POSITIONS:
+        row_ranna = [pos, "Ranná"]
+        row_poob = [pos, "Poobedná"]
 
-        ws4.append([position, shift] + row_values)
+        for i, d in enumerate(days):
+            day_date = monday + timedelta(days=i)
+            df_d = df_week[df_week["date"] == day_date]
+            pos_df = df_d[df_d["position"] == pos]
+            pairs = get_user_pairs(pos_df)
 
-    # center align Rozpis čipov
-    for col in ws4.columns:
-        for cell in col:
+            user_r, user_p = "", ""
+            for user, pair in pairs.items():
+                role_m = str(pair.get("pr", "")).lower()
+                role_p = str(pair.get("od", "")).lower()
+
+                # jednoduchá logika: rozlíšenie smeny podľa času
+                if "06" in role_m or "07" in role_m or "08" in role_m:
+                    user_r = user
+                if "14" in role_m or "15" in role_m or "16" in role_m:
+                    user_p = user
+
+            row_ranna.append(user_r or "-")
+            row_poob.append(user_p or "-")
+
+        ws4.append(row_ranna)
+        ws4.append(row_poob)
+
+    # --- Formátovanie listov ---
+    for ws in [ws1, ws2, ws3, ws4]:
+        for column_cells in ws.columns:
+            length = max(len(str(cell.value or "")) for cell in column_cells)
+            ws.column_dimensions[column_cells[0].column_letter].width = length + 2
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    out = BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return out
+    # --- Uloženie ---
+    filename = f"dochadzka_{week_label}.xlsx"
+    wb.save(filename)
+    return filename
+
 
 # ================== STREAMLIT UI ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
