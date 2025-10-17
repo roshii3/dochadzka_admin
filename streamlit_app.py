@@ -221,14 +221,15 @@ def excel_with_colors(df_raw, df_day_details, df_week, week_label):
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
-        # --- Sheet 4: Rozpis čipov (opravené a bezpečné) ---
+
+        # --- Sheet 4: Rozpis čipov (opravené pre reálne dáta) ---
     ws4 = wb.create_sheet("Rozpis čipov")
     days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
     header = ["position", "shift"] + days
     ws4.append(header)
 
     monday = df_week["date"].min()
-    POSITIONS = sorted(df_week["position"].dropna().unique().tolist())
+    POSITIONS = sorted(df_raw["position"].dropna().unique().tolist())
 
     for pos in POSITIONS:
         row_ranna = [pos, "Ranná"]
@@ -236,14 +237,22 @@ def excel_with_colors(df_raw, df_day_details, df_week, week_label):
 
         for i, d in enumerate(days):
             day_date = monday + timedelta(days=i)
-            df_d = df_week[df_week["date"] == day_date]
+            df_d = df_raw[df_raw["date"] == day_date]
             pos_df = df_d[df_d["position"] == pos]
 
-            # získať všetkých používateľov pre daný deň a pozíciu
-            users = pos_df["user_code"].dropna().unique().tolist()
+            if pos_df.empty:
+                row_ranna.append("-")
+                row_poob.append("-")
+                continue
 
-            # rozdelenie na rannú/poobednú (ak nemáš info o čase, rozdelíme rovnomerne)
-            if len(users) > 1:
+            # len príchody
+            arrivals = pos_df[pos_df["action"] == "Príchod"].sort_values("time")
+
+            # ak máš len jedného človeka -> ranná
+            # ak dvoch -> ranná + poobedná
+            users = arrivals["user_code"].unique().tolist()
+
+            if len(users) >= 2:
                 user_r = users[0]
                 user_p = users[1]
             elif len(users) == 1:
@@ -258,7 +267,7 @@ def excel_with_colors(df_raw, df_day_details, df_week, week_label):
         ws4.append(row_ranna)
         ws4.append(row_poob)
 
-    
+     
 
     # --- Formátovanie listov ---
     for ws in [ws1, ws2, ws3, ws4]:
