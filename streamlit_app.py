@@ -221,21 +221,11 @@ def excel_with_colors(df_raw, df_day_details, df_week, week_label):
     ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
         ws3.append(r)
-
-    # --- Sheet 4: Rozpis čipov (opravené) ---
+        # --- Sheet 4: Rozpis čipov (opravené a bezpečné) ---
     ws4 = wb.create_sheet("Rozpis čipov")
     days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
     header = ["position", "shift"] + days
     ws4.append(header)
-
-    # pomocná funkcia: nájde príchody/odchody pre daný deň
-    def get_user_pairs(df_day):
-        pairs = {}
-        for _, row in df_day.iterrows():
-            user = row["user_code"]
-            if user not in pairs:
-                pairs[user] = {"pr": row["arrival"], "od": row["departure"]}
-        return pairs
 
     monday = df_week["date"].min()
     POSITIONS = sorted(df_week["position"].dropna().unique().tolist())
@@ -248,24 +238,27 @@ def excel_with_colors(df_raw, df_day_details, df_week, week_label):
             day_date = monday + timedelta(days=i)
             df_d = df_week[df_week["date"] == day_date]
             pos_df = df_d[df_d["position"] == pos]
-            pairs = get_user_pairs(pos_df)
 
-            user_r, user_p = "", ""
-            for user, pair in pairs.items():
-                role_m = str(pair.get("pr", "")).lower()
-                role_p = str(pair.get("od", "")).lower()
+            # získať všetkých používateľov pre daný deň a pozíciu
+            users = pos_df["user_code"].dropna().unique().tolist()
 
-                # jednoduchá logika: rozlíšenie smeny podľa času
-                if "06" in role_m or "07" in role_m or "08" in role_m:
-                    user_r = user
-                if "14" in role_m or "15" in role_m or "16" in role_m:
-                    user_p = user
+            # rozdelenie na rannú/poobednú (ak nemáš info o čase, rozdelíme rovnomerne)
+            if len(users) > 1:
+                user_r = users[0]
+                user_p = users[1]
+            elif len(users) == 1:
+                user_r = users[0]
+                user_p = "-"
+            else:
+                user_r = user_p = "-"
 
-            row_ranna.append(user_r or "-")
-            row_poob.append(user_p or "-")
+            row_ranna.append(user_r)
+            row_poob.append(user_p)
 
         ws4.append(row_ranna)
         ws4.append(row_poob)
+
+    
 
     # --- Formátovanie listov ---
     for ws in [ws1, ws2, ws3, ws4]:
