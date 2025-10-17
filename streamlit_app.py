@@ -198,74 +198,95 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
+import pandas as pd
+import openpyxl
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.styles import PatternFill
+
 def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
     """
-    Vytvorí Excel so 4 sheets:
-    1) Rozpis čipov
-    2) df_matrix
-    3) df_day_details
-    4) df_raw
+    Vytvorí Excel súbor so 4 sheets:
+    - Summary: prehľad pozícií a prítomností
+    - Matrix: plán pozícií na týždeň
+    - Details: podrobnosti za deň
+    - Raw: pôvodné dáta z DB
     """
-
-    # Oprava kódovania pozícií
     
-    df_raw['position'] = df_raw['position'].astype(str)
-    df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'])
-
-    wb = Workbook()
-
-    # --- Sheet 1: Rozpis čipov ---
-    ws1 = wb.active
-    ws1.title = "Rozpis čipov"
-
-    dni = ['Pondelok', 'Utorok', 'Streda', 'Štvrtok', 'Piatok', 'Sobota', 'Nedeľa']
-    ws1.append(['Position', 'Shift'] + dni)
-
-    green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
-    red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
-
+    # Oprava diakritiky
+    df_raw['position'] = df_raw['position'].apply(lambda x: str(x).encode('latin1', errors='ignore').decode('utf-8', errors='ignore'))
+    df_matrix['position'] = df_matrix['position'].apply(lambda x: str(x).encode('latin1', errors='ignore').decode('utf-8', errors='ignore'))
+    
+    # Bezpečný stĺpec shift
+    if 'shift' not in df_matrix.columns:
+        df_matrix['shift'] = ''
+    
+    # Vytvorenie workbooku
+    wb = openpyxl.Workbook()
+    
+    # --- Sheet 1: Summary ---
+    if 'Summary' in wb.sheetnames:
+        ws_summary = wb['Summary']
+        wb.remove(ws_summary)
+    ws_summary = wb.create_sheet('Summary')
+    
+    summary_data = []
     for _, row in df_matrix.iterrows():
-        pozicia = row['position']
-        shift = row['shift']
-        row_values = [pozicia, shift]
-
-        for i in range(7):
-            day_date = monday + pd.Timedelta(days=i)
-            df_d = df_raw[(df_raw['position'] == pozicia) &
-                          (df_raw['timestamp'].dt.date == day_date.date()) &
-                          (df_raw['valid'] == True)]
-            if not df_d.empty:
-                user_code = df_d.sort_values('timestamp').iloc[-1]['user_code']
-                row_values.append(user_code)
-            else:
-                row_values.append('absent')
-
-        ws1.append(row_values)
-
-    # Farbenie
-    for row in ws1.iter_rows(min_row=2, min_col=3, max_col=9):
+        summary_data.append([row['position'], row.get('shift', '')])
+    for r in dataframe_to_rows(pd.DataFrame(summary_data, columns=['Position', 'Shift']), index=False, header=True):
+        ws_summary.append(r)
+    
+    # --- Sheet 2: Matrix ---
+    if 'Matrix' in wb.sheetnames:
+        ws_matrix = wb['Matrix']
+        wb.remove(ws_matrix)
+    ws_matrix = wb.create_sheet('Matrix')
+    
+    for r in dataframe_to_rows(df_matrix, index=False, header=True):
+        ws_matrix.append(r)
+    
+    # --- Sheet 3: Details ---
+    if 'Details' in wb.sheetnames:
+        ws_details = wb['Details']
+        wb.remove(ws_details)
+    ws_details = wb.create_sheet('Details')
+    
+    for r in dataframe_to_rows(df_day_details, index=False, header=True):
+        ws_details.append(r)
+    
+    # --- Sheet 4: Raw ---
+    if 'Raw' in wb.sheetnames:
+        ws_raw = wb['Raw']
+        wb.remove(ws_raw)
+    ws_raw = wb.create_sheet('Raw')
+    
+    for r in dataframe_to_rows(df_raw, index=False, header=True):
+        ws_raw.append(r)
+    
+    # --- Farebné zvýraznenie ---
+    fill_absent = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+    fill_present = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
+    
+    # Pre Summary sheet: absent/present podľa shift
+    for row in ws_summary.iter_rows(min_row=2, max_row=ws_summary.max_row, min_col=2, max_col=2):
         for cell in row:
-            cell.fill = green_fill if cell.value != 'absent' else red_fill
-
-    # --- Sheet 2: df_matrix ---
-    ws2 = wb.create_sheet("Matrix")
-    ws2.append(df_matrix.columns.tolist())
-    for r in df_matrix.itertuples(index=False):
-        ws2.append(list(r))
-
-    # --- Sheet 3: df_day_details ---
-    ws3 = wb.create_sheet("Day Details")
-    ws3.append(df_day_details.columns.tolist())
-    for r in df_day_details.itertuples(index=False):
-        ws3.append(list(r))
-
-    # --- Sheet 4: df_raw ---
-    ws4 = wb.create_sheet("Raw Data")
-    ws4.append(df_raw.columns.tolist())
-    for r in df_raw.itertuples(index=False):
-        ws4.append(list(r))
-
-    return wb
+            if cell.value.lower() in ['absent', '', None]:
+                cell.fill = fill_absent
+            else:
+                cell.fill = fill_present
+    
+    # Pre Matrix sheet: rovnaké zvýraznenie
+    for row in ws_matrix.iter_rows(min_row=2, max_row=ws_matrix.max_row, min_col=2, max_col=ws_matrix.max_column):
+        for cell in row:
+            if str(cell.value).lower() in ['absent', '', None]:
+                cell.fill = fill_absent
+            else:
+                cell.fill = fill_present
+    
+    # Uloženie súboru
+    filename = f"Dochadzka_{monday}.xlsx"
+    wb.save(filename)
+    
+    return filename
 
 
 # ================== STREAMLIT UI ==================
