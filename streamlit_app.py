@@ -488,8 +488,8 @@ if df_2w_summary:
     st.dataframe(pd.DataFrame(df_2w_summary))
 st.header("⚡ Doplniť chýbajúce smeny za posledné 2 týždne")
 
-two_weeks_ago = today - timedelta(days=14)
-days_2w = [two_weeks_ago + timedelta(days=i) for i in range(1, 14)]  # okrem dneška
+two_weeks_ago = today - timedelta(days=4)
+df_2w = [two_weeks_ago + timedelta(days=i) for i in range(1, 4)]  # okrem dneška
 
 missing_shifts = []
 
