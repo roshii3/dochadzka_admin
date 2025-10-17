@@ -201,13 +201,17 @@ def save_attendance(user_code, position, action, now=None):
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill
+import pandas as pd
 
 def get_user_pairs(pos_df):
     pairs = {}
     for _, row in pos_df.iterrows():
         user = row['user_code']
-        pairs[user] = {"pr": row.get("arrival", ""), "od": row.get("departure", "")}
+        pr = pd.to_datetime(row.get("arrival", None)) if row.get("arrival") else None
+        od = pd.to_datetime(row.get("departure", None)) if row.get("departure") else None
+        pairs[user] = {"pr": pr, "od": od}
     return pairs
+
 
 def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
     """
