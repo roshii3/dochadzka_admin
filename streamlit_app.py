@@ -198,95 +198,81 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
+from io import BytesIO
 import pandas as pd
-import openpyxl
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.styles import PatternFill
+from datetime import date
 
-def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
-    """
-    Vytvorí Excel súbor so 4 sheets:
-    - Summary: prehľad pozícií a prítomností
-    - Matrix: plán pozícií na týždeň
-    - Details: podrobnosti za deň
-    - Raw: pôvodné dáta z DB
-    """
-    
-    # Oprava diakritiky
-    df_raw['position'] = df_raw['position'].apply(lambda x: str(x).encode('latin1', errors='ignore').decode('utf-8', errors='ignore'))
-    df_matrix['position'] = df_matrix['position'].apply(lambda x: str(x).encode('latin1', errors='ignore').decode('utf-8', errors='ignore'))
-    
-    # Bezpečný stĺpec shift
-    if 'shift' not in df_matrix.columns:
-        df_matrix['shift'] = ''
-    
-    # Vytvorenie workbooku
-    wb = openpyxl.Workbook()
-    
-    # --- Sheet 1: Summary ---
-    if 'Summary' in wb.sheetnames:
-        ws_summary = wb['Summary']
-        wb.remove(ws_summary)
-    ws_summary = wb.create_sheet('Summary')
-    
-    summary_data = []
-    for _, row in df_matrix.iterrows():
-        summary_data.append([row['position'], row.get('shift', '')])
-    for r in dataframe_to_rows(pd.DataFrame(summary_data, columns=['Position', 'Shift']), index=False, header=True):
-        ws_summary.append(r)
-    
-    # --- Sheet 2: Matrix ---
-    if 'Matrix' in wb.sheetnames:
-        ws_matrix = wb['Matrix']
-        wb.remove(ws_matrix)
-    ws_matrix = wb.create_sheet('Matrix')
-    
-    for r in dataframe_to_rows(df_matrix, index=False, header=True):
-        ws_matrix.append(r)
-    
-    # --- Sheet 3: Details ---
-    if 'Details' in wb.sheetnames:
-        ws_details = wb['Details']
-        wb.remove(ws_details)
-    ws_details = wb.create_sheet('Details')
-    
+def excel_with_colors(df_matrix: pd.DataFrame, df_day_details: pd.DataFrame, df_raw: pd.DataFrame, monday: date) -> BytesIO:
+    wb = Workbook()
+
+    # --- Sheet 1: Týždenný prehľad ---
+    ws1 = wb.active
+    ws1.title = "Týždenný prehľad"
+    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+
+    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
+        ws1.append(r)
+
+    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
+        for cell in row:
+            val = cell.value
+            if isinstance(val, (int, float)):
+                cell.fill = green
+            elif isinstance(val, str) and val.strip().startswith("⚠"):
+                cell.fill = yellow
+
+    # --- Sheet 2: Denné - detail ---
+    ws2 = wb.create_sheet("Denné - detail")
     for r in dataframe_to_rows(df_day_details, index=False, header=True):
-        ws_details.append(r)
-    
-    # --- Sheet 4: Raw ---
-    if 'Raw' in wb.sheetnames:
-        ws_raw = wb['Raw']
-        wb.remove(ws_raw)
-    ws_raw = wb.create_sheet('Raw')
-    
+        ws2.append(r)
+
+    # --- Sheet 3: Surové dáta ---
+    ws3 = wb.create_sheet("Surové dáta")
     for r in dataframe_to_rows(df_raw, index=False, header=True):
-        ws_raw.append(r)
-    
-    # --- Farebné zvýraznenie ---
-    fill_absent = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
-    fill_present = PatternFill(start_color="CCFFCC", end_color="CCFFCC", fill_type="solid")
-    
-    # Pre Summary sheet: absent/present podľa shift
-    for row in ws_summary.iter_rows(min_row=2, max_row=ws_summary.max_row, min_col=2, max_col=2):
-        for cell in row:
-            if cell.value.lower() in ['absent', '', None]:
-                cell.fill = fill_absent
+        ws3.append(r)
+
+    # --- Sheet 4: Rozpis čipov ---
+    ws4 = wb.create_sheet("Rozpis čipov")
+    days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
+    header = ["position", "shift"] + days
+    ws4.append(header)
+
+    for det in df_day_details.to_dict(orient="records"):
+        position = det.get("position", "")
+        # Vybereme shift podľa dostupnosti rannej/popoldňajšej smeny
+        shift = det.get("morning_status") if det.get("morning_status") else det.get("afternoon_status")
+        row_values = []
+
+        for i in range(7):
+            # pre každý deň vyberieme detail podľa shiftu
+            if shift and (shift.lower().startswith("ranna") or shift == "06:00-14_00"):
+                detail_text = det.get("morning_detail", "")
             else:
-                cell.fill = fill_present
-    
-    # Pre Matrix sheet: rovnaké zvýraznenie
-    for row in ws_matrix.iter_rows(min_row=2, max_row=ws_matrix.max_row, min_col=2, max_col=ws_matrix.max_column):
-        for cell in row:
-            if str(cell.value).lower() in ['absent', '', None]:
-                cell.fill = fill_absent
-            else:
-                cell.fill = fill_present
-    
-    # Uloženie súboru
-    filename = f"Dochadzka_{monday}.xlsx"
-    wb.save(filename)
-    
-    return filename
+                detail_text = det.get("afternoon_detail", "")
+
+            user_code = ""
+            if detail_text and detail_text != "-":
+                parts = detail_text.split(":", 1)
+                if parts:
+                    user_code = parts[0].strip()
+
+            row_values.append(user_code)
+
+        ws4.append([position, shift] + row_values)
+
+    # Center align Rozpis čipov
+    for col in ws4.columns:
+        for cell in col:
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
 
 
 # ================== STREAMLIT UI ==================
