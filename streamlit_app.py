@@ -208,7 +208,8 @@ def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
     """
 
     # Oprava kódovania pozícií
-    df_raw['position'] = df_raw['position'].str.encode('latin1').str.decode('utf-8')
+    
+    df_raw['position'] = df_raw['position'].astype(str)
     df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'])
 
     wb = Workbook()
