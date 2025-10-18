@@ -476,31 +476,44 @@ for day in days_5d:
     st.markdown(f"### 📅 {day.strftime('%A %d.%m.%Y')}")
     df_day = df_week[df_week["date"] == day] if not df_week.empty else pd.DataFrame()
     summary = summarize_day(df_day, day)
-    
+
     for pos in POSITIONS:
         morning = summary[pos]["morning"]
         afternoon = summary[pos]["afternoon"]
 
-        # Ranná chýba
+        # ======== Doplniť rannú smenu ========
         if morning["status"] not in ("Ranna OK", "R+P OK"):
-            st.markdown(f"#### Doplniť rannú smenu — {pos}")
-            if st.button(f"Uložiť rannú — {pos} ({day})", key=f"{pos}_morning_{day}"):
-                ts_pr = tz.localize(datetime.combine(day, time(6, 0)))
-                ts_od = tz.localize(datetime.combine(day, time(14, 0)))
-                # uloženie do DB
-                save_attendance("USER_DEFAULT", pos, "Príchod", ts_pr)
-                save_attendance("USER_DEFAULT", pos, "Odchod", ts_od)
-                st.success("Ranná smena uložená ✅")
-                st.experimental_rerun()
+            st.markdown(f"#### 🌅 Doplniť rannú smenu — {pos}")
+            user_code_m = st.text_input(
+                f"Zadaj čip pre rannú ({pos}, {day})",
+                key=f"user_m_{pos}_{day}"
+            )
+            if st.button(f"💾 Uložiť rannú — {pos} ({day})", key=f"{pos}_morning_btn_{day}"):
+                if not user_code_m.strip():
+                    st.warning("⚠️ Zadaj čip používateľa!")
+                else:
+                    ts_pr = tz.localize(datetime.combine(day, time(6, 0, 0, 123456)))
+                    ts_od = tz.localize(datetime.combine(day, time(14, 0, 0, 654321)))
+                    save_attendance(user_code_m, pos, "Príchod", ts_pr)
+                    save_attendance(user_code_m, pos, "Odchod", ts_od)
+                    st.success(f"Ranná smena pre {pos} uložená ✅")
+                    st.experimental_rerun()
 
-        # Poobedná chýba
+        # ======== Doplniť poobednú smenu ========
         if afternoon["status"] not in ("Poobedna OK", "R+P OK"):
-            st.markdown(f"#### Doplniť poobednú smenu — {pos}")
-            if st.button(f"Uložiť poobednú — {pos} ({day})", key=f"{pos}_afternoon_{day}"):
-                ts_pr = tz.localize(datetime.combine(day, time(14, 0)))
-                ts_od = tz.localize(datetime.combine(day, time(22, 0)))
-                # uloženie do DB
-                save_attendance("USER_DEFAULT", pos, "Príchod", ts_pr)
-                save_attendance("USER_DEFAULT", pos, "Odchod", ts_od)
-                st.success("Poobedná smena uložená ✅")
-                st.experimental_rerun()
+            st.markdown(f"#### 🌇 Doplniť poobednú smenu — {pos}")
+            user_code_p = st.text_input(
+                f"Zadaj čip pre poobednú ({pos}, {day})",
+                key=f"user_p_{pos}_{day}"
+            )
+            if st.button(f"💾 Uložiť poobednú — {pos} ({day})", key=f"{pos}_afternoon_btn_{day}"):
+                if not user_code_p.strip():
+                    st.warning("⚠️ Zadaj čip používateľa!")
+                else:
+                    ts_pr = tz.localize(datetime.combine(day, time(14, 0, 0, 234567)))
+                    ts_od = tz.localize(datetime.combine(day, time(22, 0, 0, 987654)))
+                    save_attendance(user_code_p, pos, "Príchod", ts_pr)
+                    save_attendance(user_code_p, pos, "Odchod", ts_od)
+                    st.success(f"Poobedná smena pre {pos} uložená ✅")
+                    st.experimental_rerun()
+
