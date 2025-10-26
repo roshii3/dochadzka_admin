@@ -129,8 +129,8 @@ def merge_intervals(pairs):
         else:
             merged.append((start, end))
     return merged
-
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
+    """Zhrnie jednu pozíciu za deň."""
     morning = {"status": "absent", "hours": 0.0, "detail": None}
     afternoon = {"status": "absent", "hours": 0.0, "detail": None}
     details = []
@@ -139,85 +139,30 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         return morning, afternoon, details
 
     pairs = get_user_pairs(pos_day_df)
-    day_date = pos_day_df["date"].iloc[0]
-    is_weekend = day_date.weekday() >= 5  # sobota/nedeľa
 
-    rp_user = None
-    for user, pair in pairs.items():
-        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position, is_weekend)
-        if role_m == "R+P OK" and role_p == "R+P OK":
-            rp_user = (user, pair, h_m, h_p)
-            break
+    # === overíme, či je víkend ===
+    weekday = pos_day_df["timestamp"].dt.weekday.iloc[0]  # 0=pondelok, 5=sobota, 6=nedeľa
+    if weekday in (5, 6):  # Sobota alebo Nedeľa
+        # Najskorší príchod (ale od 06:00 začíname počítať)
+        pr_list = [p["pr"] for p in pairs.values() if pd.notna(p["pr"])]
+        od_list = [p["od"] for p in pairs.values() if pd.notna(p["od"])]
 
-    if rp_user:
-        user, pair, h_m, h_p = rp_user
-        morning = {"status": "R+P OK", "hours": h_m, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
-        afternoon = {"status": "R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if pr_list and od_list:
+            earliest_pr = min(pr_list)
+            latest_od = max(od_list)
+            start_time = max(earliest_pr, datetime.combine(earliest_pr.date(), time(6,0)).replace(tzinfo=earliest_pr.tzinfo))
+            end_time = latest_od
+            total_hours = round((end_time - start_time).total_seconds() / 3600, 2)
+
+            detail_str = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+            morning = {"status": "Obsadené", "hours": total_hours, "detail": detail_str}
+            afternoon = {"status": "Obsadené", "hours": 0.0, "detail": None}  # cez víkend nepotrebujeme poobednú
         return morning, afternoon, details
 
-    had_invalid_or_missing = False
-    for user, pair in pairs.items():
-        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position, is_weekend)
-        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
-            morning = {"status": "Ranna OK", "hours": h_m, "detail": f"{user}: {pair['pr']}–{pair['od']}"}
-        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
-            afternoon = {"status": "Poobedna OK", "hours": h_p, "detail": f"{user}: {pair['pr']}–{pair['od']}"}
-        if msgs:
-            had_invalid_or_missing = True
-            for m in msgs:
-                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
+    # === Pôvodná logika pondelok–piatok ===
+    # ... sem vlož celú pôvodnú logiku, ako máš teraz
 
-    if (morning["status"] in ("Ranna OK", "R+P OK") or afternoon["status"] in ("Poobedna OK", "R+P OK")) and not had_invalid_or_missing:
-        return morning, afternoon, details
 
-    merged = merge_intervals(pairs)
-    total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2) if merged else 0.0
-    if not merged:
-        return morning, afternoon, details
-
-    # Rozdelenie na morning/afternoon podľa okien pracovného dňa alebo víkendu
-    morning_hours = 0.0
-    afternoon_hours = 0.0
-    for start, end in merged:
-        if is_weekend:
-            morning_window_start = datetime.combine(start.date(), time(7,0)).replace(tzinfo=start.tzinfo)
-            morning_window_end = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-            afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-            afternoon_window_end = datetime.combine(start.date(), time(19,0)).replace(tzinfo=start.tzinfo)
-        else:
-            morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
-            morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
-            afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-            afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
-
-        inter_start = max(start, morning_window_start)
-        inter_end = min(end, morning_window_end)
-        if inter_end > inter_start:
-            morning_hours += (inter_end - inter_start).total_seconds() / 3600
-
-        inter_start = max(start, afternoon_window_start)
-        inter_end = min(end, afternoon_window_end)
-        if inter_end > inter_start:
-            afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
-
-    morning_hours = round(morning_hours, 2)
-    afternoon_hours = round(afternoon_hours, 2)
-
-    if morning_hours > 0:
-        morning["status"] = "Čiastočná"
-        morning["hours"] = morning_hours
-        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])
-    if afternoon_hours > 0:
-        afternoon["status"] = "Čiastočná"
-        afternoon["hours"] = afternoon_hours
-        afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])
-
-    if morning_hours == 0 and afternoon_hours == 0:
-        morning["status"] = "absent"
-        morning["hours"] = total_hours
-        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])
-
-    return morning, afternoon, details
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
