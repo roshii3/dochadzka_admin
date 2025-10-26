@@ -40,10 +40,10 @@ POSITIONS = [
 SHIFT_HOURS = 7.5
 DOUBLE_SHIFT_HOURS = 15.25
 VELITEL_DOUBLE = 16.25
+SWAP_WINDOW_MINUTES = 30
 
 # ================== HELPERS ==================
 def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
-    """Načíta záznamy z tabuľky attendance medzi start_dt (inclusive) a end_dt (exclusive)."""
     res = (
         databaze.table("attendance")
         .select("*")
@@ -63,7 +63,6 @@ def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
     return df
 
 def get_user_pairs(pos_day_df: pd.DataFrame):
-    """Pre daný pos_day_df (záznamy pre jednu pozíciu a deň) vráti dict user-> {pr, od, pr_count, od_count}."""
     pairs = {}
     if pos_day_df.empty:
         return pairs
@@ -77,7 +76,6 @@ def get_user_pairs(pos_day_df: pd.DataFrame):
     return pairs
 
 def classify_pair(pr, od, position):
-    """Klasifikuje pár pr/od podľa časov a pozície, vracia (mor_status, aft_status, hours_m, hours_p, msgs)."""
     msgs = []
     if (pd.isna(pr) or pr is None) and (pd.isna(od) or od is None):
         return ("none", "none", 0.0, 0.0, msgs)
@@ -91,27 +89,39 @@ def classify_pair(pr, od, position):
     pr_t = pr.time()
     od_t = od.time()
 
-    # Veliteľ má špeciálne hodiny
     if position.lower().startswith("vel"):
         if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
             return ("R+P OK", "R+P OK", VELITEL_DOUBLE, VELITEL_DOUBLE, msgs)
-
-    # Dvojitá smena (non-veliteľ)
     if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
         return ("R+P OK", "R+P OK", DOUBLE_SHIFT_HOURS, DOUBLE_SHIFT_HOURS, msgs)
-
-    # Ranná
     if pr_t <= time(7, 0) and od_t <= time(15, 0):
         return ("Ranna OK", "none", SHIFT_HOURS, 0.0, msgs)
-
-    # Poobedná
     if pr_t >= time(13, 0) and od_t >= time(21, 0):
         return ("none", "Poobedna OK", 0.0, SHIFT_HOURS, msgs)
 
     msgs.append("invalid_times")
     return ("invalid", "invalid", 0.0, 0.0, msgs)
+
+def merge_intervals(pairs):
+    intervals = []
+    for pair in pairs.values():
+        if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
+            intervals.append((pair["pr"], pair["od"]))
+    if not intervals:
+        return []
+
+    intervals.sort(key=lambda x: x[0])
+    merged = [intervals[0]]
+    for start, end in intervals[1:]:
+        last_start, last_end = merged[-1]
+        gap_min = (start - last_end).total_seconds() / 60
+        if gap_min <= SWAP_WINDOW_MINUTES:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
-    """Zhrnie jednu pozíciu za deň."""
     morning = {"status": "absent", "hours": 0.0, "detail": None}
     afternoon = {"status": "absent", "hours": 0.0, "detail": None}
     details = []
@@ -121,191 +131,75 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
 
     pairs = get_user_pairs(pos_day_df)
 
-    # === overíme, či je víkend ===
     weekday = pos_day_df["timestamp"].dt.weekday.iloc[0]  # 0=pondelok, 5=sobota, 6=nedeľa
     if weekday in (5, 6):  # Sobota alebo Nedeľa
-        # Najskorší príchod (ale od 06:00 začíname počítať)
         pr_list = [p["pr"] for p in pairs.values() if pd.notna(p["pr"])]
         od_list = [p["od"] for p in pairs.values() if pd.notna(p["od"])]
-
         if pr_list and od_list:
             earliest_pr = min(pr_list)
             latest_od = max(od_list)
             start_time = max(earliest_pr, datetime.combine(earliest_pr.date(), time(6,0)).replace(tzinfo=earliest_pr.tzinfo))
             end_time = latest_od
             total_hours = round((end_time - start_time).total_seconds() / 3600, 2)
-
             detail_str = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
             morning = {"status": "Obsadené", "hours": total_hours, "detail": detail_str}
-            afternoon = {"status": "Obsadené", "hours": 0.0, "detail": None}  # cez víkend nepotrebujeme poobednú
-        return morning, afternoon, details
+            return morning, afternoon, details
 
-    # === Pôvodná logika pondelok–piatok ===
-    # ... sem vlož celú pôvodnú logiku, ako máš teraz
+    # Pondelok–Piatok logika
+    for user, pair in pairs.items():
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
+            morning = {"status": "Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
+            afternoon = {"status": "Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if msgs:
+            for m in msgs:
+                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
 
+    merged = merge_intervals(pairs)
+    total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2) if merged else 0.0
 
+    morning_hours = 0.0
+    afternoon_hours = 0.0
+    for start, end in merged:
+        morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
+        morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
+        afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
+        afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
 
-def summarize_day(df_day: pd.DataFrame, target_date: date):
-    """Zhrnie všetky pozície pre daný deň."""
-    results = {}
-    for pos in POSITIONS:
-        pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
-        morning, afternoon, details = summarize_position_day(pos_df, pos)
+        inter_start = max(start, morning_window_start)
+        inter_end = min(end, morning_window_end)
+        if inter_end > inter_start:
+            morning_hours += (inter_end - inter_start).total_seconds() / 3600
 
-        if morning["status"] == "R+P OK" and afternoon["status"] == "R+P OK":
-            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
-        elif morning["status"] in ("Ranna OK", "R+P OK") and afternoon["status"] in ("Poobedna OK", "R+P OK"):
-            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
-        else:
-            total = morning.get("hours", 0.0) + afternoon.get("hours", 0.0)
+        inter_start = max(start, afternoon_window_start)
+        inter_end = min(end, afternoon_window_end)
+        if inter_end > inter_start:
+            afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
 
-        results[pos] = {
-            "morning": morning,
-            "afternoon": afternoon,
-            "details": details,
-            "total_hours": total
-        }
+    morning_hours = round(morning_hours, 2)
+    afternoon_hours = round(afternoon_hours, 2)
 
-    return results
+    if morning_hours > 0:
+        morning["status"] = "Čiastočná"
+        morning["hours"] = morning_hours
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+    if afternoon_hours > 0:
+        afternoon["status"] = "Čiastočná"
+        afternoon["hours"] = afternoon_hours
+        afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
 
+    if morning_hours == 0 and afternoon_hours == 0:
+        morning["status"] = "absent"
+        morning["hours"] = total_hours
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
 
-def save_attendance(user_code, position, action, now=None):
-    """Uloží príchod/odchod do tabuľky attendance (Supabase) s presným timestampom."""
-    user_code = user_code.strip()
-    if not now:
-        now = datetime.now(tz)
-    # ak je sekundová a mikrosekundová časť nulová, doplníme aktuálny čas
-    if now.second == 0 and now.microsecond == 0:
-        current = datetime.now(tz)
-        now = now.replace(second=current.second, microsecond=current.microsecond)
+    return morning, afternoon, details
 
-    # uložíme v tvare: 2025-10-14 13:46:13.972178+00
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f") + "+00"
+# ================== UI & LOGIKA ==================
+# Tu vložíš pôvodný Streamlit UI kód, načítanie dát, exporty, výber týždňa, pozícií atď.
+# Funkcia summarize_position_day sa volá pri generovaní reportu.
 
-    databaze.table("attendance").insert({
-        "user_code": user_code,
-        "position": position,
-        "action": action,
-        "timestamp": ts_str,
-        "valid": True
-    }).execute()
-    return True
-
-# ================== EXCEL EXPORT (s rozpisom čipov) ==================
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Alignment
-from openpyxl.utils.dataframe import dataframe_to_rows
-from datetime import timedelta, time
-from io import BytesIO
-import pandas as pd
-
-
-def get_chip_assignments(df_raw: pd.DataFrame, monday):
-    """
-    Vygeneruje mapovanie (pozícia, smena, deň) -> [user_codes].
-    """
-    assignments = {}
-    if df_raw.empty:
-        return assignments
-
-    df_raw["timestamp"] = pd.to_datetime(df_raw["timestamp"], errors="coerce")
-    df_raw["date"] = df_raw["timestamp"].dt.date
-
-    for pos in df_raw["position"].unique():
-        pos_df = df_raw[df_raw["position"] == pos]
-        for i in range(7):
-            d = monday + timedelta(days=i)
-            day_df = pos_df[pos_df["date"] == d]
-            if day_df.empty:
-                continue
-            pairs = get_user_pairs(day_df)
-            for user, pair in pairs.items():
-                if pd.isna(pair["pr"]) or pd.isna(pair["od"]):
-                    continue
-                pr_t = pair["pr"].time()
-                od_t = pair["od"].time()
-
-                # Ranná
-                if pr_t <= time(7, 0) and od_t <= time(15, 0):
-                    shift = "06:00-14_00"
-                # Poobedná
-                elif pr_t >= time(13, 0) and od_t >= time(21, 0):
-                    shift = "14:00-22:00"
-                # Dvojitá
-                elif pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
-                    assignments[(pos, "06:00-14_00", i)] = assignments.get((pos, "06:00-14_00", i), []) + [user]
-                    assignments[(pos, "14:00-22:00", i)] = assignments.get((pos, "14:00-22:00", i), []) + [user]
-                    continue
-                else:
-                    continue
-
-                assignments[(pos, shift, i)] = assignments.get((pos, shift, i), []) + [user]
-    return assignments
-
-
-
-def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
-    """
-    Vytvorí farebný Excel so 4 sheetmi:
-    - Týždenný prehľad
-    - Denné - detail
-    - Surové dáta
-    - Rozpis čipov
-    """
-    wb = Workbook()
-    ws1 = wb.active
-    ws1.title = "Týždenný prehľad"
-    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-
-    # === SHEET 1: Týždenný prehľad ===
-    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
-        ws1.append(r)
-
-    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
-        for cell in row:
-            val = cell.value
-            if isinstance(val, (int, float)):
-                cell.fill = green
-            elif isinstance(val, str) and val.strip().startswith("⚠"):
-                cell.fill = yellow
-
-    # === SHEET 2: Denné - detail ===
-    ws2 = wb.create_sheet("Denné - detail")
-    for r in dataframe_to_rows(df_day_details, index=False, header=True):
-        ws2.append(r)
-
-    # === SHEET 3: Surové dáta ===
-    ws3 = wb.create_sheet("Surové dáta")
-    for r in dataframe_to_rows(df_raw, index=False, header=True):
-        ws3.append(r)
-
-    # === SHEET 4: Rozpis čipov ===
-    ws4 = wb.create_sheet("Rozpis čipov")
-    days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
-    header = ["position", "shift"] + days
-    ws4.append(header)
-
-    chip_map = get_chip_assignments(df_raw, monday)
-    POSITIONS = sorted(df_raw["position"].unique())
-
-    for pos in POSITIONS:
-        for shift in ["06:00-14_00", "14:00-22:00"]:
-            row_vals = []
-            for i in range(7):
-                users = chip_map.get((pos, shift, i), [])
-                row_vals.append(", ".join(users) if users else "")
-            ws4.append([pos, shift] + row_vals)
-
-    for col in ws4.columns:
-        for cell in col:
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    # --- Uloženie ---
-    out = BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return out
 
 
 
