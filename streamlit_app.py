@@ -40,7 +40,7 @@ POSITIONS = [
 SHIFT_HOURS = 7.5
 DOUBLE_SHIFT_HOURS = 15.25
 VELITEL_DOUBLE = 16.25
-SWAP_WINDOW_MINUTES = 30  # <-- nastavené na 30 minút
+SWAP_WINDOW_MINUTES = 30  # <-- zmena: 30 minút
 
 # ================== HELPERS ==================
 def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
@@ -115,7 +115,7 @@ def classify_pair(pr, od, position):
 def merge_intervals(pairs):
     """
     Zlúči intervaly (príchod, odchod) pre pozíciu.
-    Pokiaľ je medzera medzi intervalmi <= SWAP_WINDOW_MINUTES, spoja sa (považujeme to za swap).
+    Ak je medzera medzi intervalmi <= SWAP_WINDOW_MINUTES, spoja sa (považujeme to za swap/pokrývanie).
     Vráti zoznam zlúčených (start, end) (timezone-aware datetimes).
     """
     intervals = []
@@ -131,20 +131,15 @@ def merge_intervals(pairs):
         last_start, last_end = merged[-1]
         gap_min = (start - last_end).total_seconds() / 60
         if gap_min <= SWAP_WINDOW_MINUTES:
-            # merge (t.j. považujeme to za plynulé pokrytie)
+            # merge (považujeme to za plynulé pokrytie)
             merged[-1] = (last_start, max(last_end, end))
         else:
             merged.append((start, end))
     return merged
 
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
-    """
-    Zhrnie jednu pozíciu za deň s ohľadom na výmeny:
-    - spočíta zlúčené intervaly (merge_intervals)
-    - vypočíta reálne pokrytie (hours)
-    - určí status (R+P OK, Ranna OK, Poobedna OK, Čiastočná, Absent)
-    - vráti morning, afternoon, details
-    """
+    """Zhrnie jednu pozíciu za deň: ranná, poobedná, detaily.
+    Pôvodné správanie sa zachová; pokiaľ dôjde k nejakému problému/invalid, doplní sa merge_intervals (30 min)."""
     morning = {"status": "absent", "hours": 0.0, "detail": None}
     afternoon = {"status": "absent", "hours": 0.0, "detail": None}
     details = []
@@ -153,100 +148,123 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         return morning, afternoon, details
 
     pairs = get_user_pairs(pos_day_df)
-    # detaily pre zobrazenie (per user)
+
+    # preferujeme užívateľa s kompletnou R+P OK (ak existuje) — pôvodné správanie
+    rp_user = None
     for user, pair in pairs.items():
-        if pd.notna(pair["pr"]) or pd.notna(pair["od"]):
-            details.append(f"{user}: pr:{pair['pr']} od:{pair['od']}")
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "R+P OK" and role_p == "R+P OK":
+            rp_user = (user, pair, h_m, h_p)
+            break
 
-    # zlúčené intervaly s ohľadom na SWAP_WINDOW_MINUTES
-    merged = merge_intervals(pairs)
-    total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2)
-
-    # ak nemáme žiadne kompletné intervaly, skúsme stále rozlíšiť chýbajúce/invalid pre každého usera
-    if not merged:
-        # fallback: analyzuj jednotlivé páry podľa classify_pair pre logging
-        for user, pair in pairs.items():
-            role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
-            if msgs:
-                for m in msgs:
-                    details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
-        morning["status"] = "absent"
-        morning["hours"] = 0.0
+    if rp_user:
+        user, pair, h_m, h_p = rp_user
+        morning = {"status": "R+P OK", "hours": h_m, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        afternoon = {"status": "R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
         return morning, afternoon, details
 
-    # earliest start and latest end across merged intervals
-    earliest = min(s[0] for s in merged)
-    latest = max(s[1] for s in merged)
-    e_t = earliest.time()
-    l_t = latest.time()
+    # inak skontrolujeme jednotlivcov podľa pôvodnej logiky a zbierame detaily (msgs)
+    had_invalid_or_missing = False
+    for user, pair in pairs.items():
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
+            morning = {"status": "Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
+            afternoon = {"status": "Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
 
-    # rozhodovanie podľa reálneho pokrytia a časového rozsahu
+        if msgs:
+            had_invalid_or_missing = True
+            for m in msgs:
+                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
+
+    # Ak všetko podľa pôvodnej logiky vyzerá OK (ráno alebo poobedie rozpoznané), nechaj tak
+    if (morning["status"] in ("Ranna OK", "R+P OK") or afternoon["status"] in ("Poobedna OK", "R+P OK")) and not had_invalid_or_missing:
+        return morning, afternoon, details
+
+    # Inak (napr. invalidy, chýbajúce odchody/príchody alebo neúplné) spravíme doplnkové overenie:
+    # zlúčime intervaly s ohľadom na SWAP_WINDOW_MINUTES a prehodnotíme pokrytie pozície
+    merged = merge_intervals(pairs)
+    total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2) if merged else 0.0
+
+    # ak žiadne komplet intervaly, vrátime pôvodné detaily (missing/invalid)
+    if not merged:
+        # ponecháme pôvodné morning/afternoon a detaily
+        return morning, afternoon, details
+
+    # rozhodovanie podľa zlúčeného pokrytia
     if position.lower().startswith("vel"):
         double_threshold = VELITEL_DOUBLE
     else:
         double_threshold = DOUBLE_SHIFT_HOURS
 
+    earliest = min(s[0] for s in merged)
+    latest = max(s[1] for s in merged)
+    e_t = earliest.time()
+    l_t = latest.time()
+
+    # Ak zlúčené intervaly dávajú kompletnú dvojitú smenu (napr. people swapped) -> R+P OK
     if e_t <= time(7, 0) and (l_t >= time(21, 0) or l_t < time(2, 0)) and total_hours >= double_threshold - 0.01:
-        # plná dvojitá
         morning["status"] = "R+P OK"
         afternoon["status"] = "R+P OK"
+        # rozdeľme hours rovnomerne (len pre report)
         morning["hours"] = round(total_hours / 2, 2)
         afternoon["hours"] = round(total_hours / 2, 2)
-        morning["detail"] = " + ".join(details)
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
         afternoon["detail"] = morning["detail"]
-    else:
-        # ak pokrytie postačuje na rannú (počítame podľa earliest/latest)
-        if e_t <= time(7, 0) and latest.time() <= time(15, 0):
-            morning["status"] = "Ranna OK"
-            morning["hours"] = round(total_hours, 2)
-            morning["detail"] = " + ".join(details)
-        elif e_t >= time(13, 0) and l_t >= time(21, 0):
-            afternoon["status"] = "Poobedna OK"
-            afternoon["hours"] = round(total_hours, 2)
-            afternoon["detail"] = " + ".join(details)
-        else:
-            # čiastočné pokrytie: rozdelíme coverage na rannú/poobednú podľa časového pokrytia
-            # jednoduchý prístup: ak earliest <=7:00 prirátaj do ranných max SHIFT_HOURS, ak latest>=21:00 prirátaj do poobedných
-            morning_hours = 0.0
-            afternoon_hours = 0.0
-            # ak sú merged intervaly, zistíme, či pokrývajú ranné okno a poobedné okno
-            for start, end in merged:
-                # ranné okno 06:00-15:00 (prípadne 07:00+15:00 podľa pravidla)
-                morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
-                morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
-                # poobedné okno 13:00-22:00
-                afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-                afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
+        return morning, afternoon, details
 
-                # intersect with morning window
-                inter_start = max(start, morning_window_start)
-                inter_end = min(end, morning_window_end)
-                if inter_end > inter_start:
-                    morning_hours += (inter_end - inter_start).total_seconds() / 3600
+    # Ak zlúčené intervaly naplnia ranné okno
+    if e_t <= time(7, 0) and latest.time() <= time(15, 0) and total_hours >= SHIFT_HOURS - 0.01:
+        morning["status"] = "Ranna OK"
+        morning["hours"] = round(total_hours, 2)
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+        return morning, afternoon, details
 
-                # intersect with afternoon window
-                inter_start = max(start, afternoon_window_start)
-                inter_end = min(end, afternoon_window_end)
-                if inter_end > inter_start:
-                    afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
+    # Ak zlúčené intervaly naplnia poobedné okno
+    if e_t >= time(13, 0) and l_t >= time(21, 0) and total_hours >= SHIFT_HOURS - 0.01:
+        afternoon["status"] = "Poobedna OK"
+        afternoon["hours"] = round(total_hours, 2)
+        afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+        return morning, afternoon, details
 
-            morning_hours = round(morning_hours, 2)
-            afternoon_hours = round(afternoon_hours, 2)
+    # Inak rozdelíme reálne pokrytie na rannú/poobednú podľa prierezu okien (6-15 a 13-22)
+    morning_hours = 0.0
+    afternoon_hours = 0.0
+    for start, end in merged:
+        morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
+        morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
+        afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
+        afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
 
-            if morning_hours > 0:
-                morning["status"] = "Čiastočná"
-                morning["hours"] = morning_hours
-                morning["detail"] = " + ".join(details)
-            if afternoon_hours > 0:
-                afternoon["status"] = "Čiastočná"
-                afternoon["hours"] = afternoon_hours
-                afternoon["detail"] = " + ".join(details)
+        # intersect with morning window
+        inter_start = max(start, morning_window_start)
+        inter_end = min(end, morning_window_end)
+        if inter_end > inter_start:
+            morning_hours += (inter_end - inter_start).total_seconds() / 3600
 
-            # ak žiadne okno nenaplnené, označíme absent / partial ako total_hours
-            if morning_hours == 0 and afternoon_hours == 0:
-                morning["status"] = "absent"
-                morning["hours"] = total_hours
-                morning["detail"] = " + ".join(details)
+        # intersect with afternoon window
+        inter_start = max(start, afternoon_window_start)
+        inter_end = min(end, afternoon_window_end)
+        if inter_end > inter_start:
+            afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
+
+    morning_hours = round(morning_hours, 2)
+    afternoon_hours = round(afternoon_hours, 2)
+
+    if morning_hours > 0:
+        morning["status"] = "Čiastočná"
+        morning["hours"] = morning_hours
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+    if afternoon_hours > 0:
+        afternoon["status"] = "Čiastočná"
+        afternoon["hours"] = afternoon_hours
+        afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+
+    # ak žiadne okno nenaplnené, označíme absent s celkovým pokrytím
+    if morning_hours == 0 and afternoon_hours == 0:
+        morning["status"] = "absent"
+        morning["hours"] = total_hours
+        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
 
     return morning, afternoon, details
 
@@ -257,13 +275,18 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
         morning, afternoon, details = summarize_position_day(pos_df, pos)
 
-        total = round(morning.get("hours", 0.0) + afternoon.get("hours", 0.0), 2)
+        if morning["status"] == "R+P OK" and afternoon["status"] == "R+P OK":
+            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
+        elif morning["status"] in ("Ranna OK", "R+P OK") and afternoon["status"] in ("Poobedna OK", "R+P OK"):
+            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
+        else:
+            total = morning.get("hours", 0.0) + afternoon.get("hours", 0.0)
 
         results[pos] = {
             "morning": morning,
             "afternoon": afternoon,
             "details": details,
-            "total_hours": total
+            "total_hours": round(total, 2)
         }
 
     return results
@@ -291,12 +314,12 @@ def save_attendance(user_code, position, action, now=None):
     return True
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
-from datetime import timedelta as _tdelta  # pre lokálnu použitie
+from datetime import timedelta as _tdelta  # lokálna alias
+from datetime import time as _time  # lokálna alias pre clarity
 
 def get_chip_assignments(df_raw: pd.DataFrame, monday):
     """
     Vygeneruje mapovanie (pozícia, smena, deň) -> [user_codes].
-    Používa na to prístup rovnaký ako pôvodný – základné rozpoznanie smien podľa pr/od párov.
     """
     assignments = {}
     if df_raw.empty:
@@ -461,7 +484,7 @@ for i, pos in enumerate(POSITIONS):
 
     if info["details"]:
         for d in info["details"]:
-            col.info(d)
+            col.error(d)
 
     day_details_rows.append({
         "position": pos,
@@ -550,7 +573,6 @@ for pos in POSITIONS:
                 "first_pr": pair["pr"],
                 "last_od": pair["od"]
             })
-
 # --- posledných 5 dní (okrem dnes) ---
 start_5d = today - timedelta(days=5)
 days_5d = [start_5d + timedelta(days=i) for i in range(5)]
@@ -567,7 +589,7 @@ for day in days_5d:
         afternoon = summary[pos]["afternoon"]
 
         # ======== Doplniť rannú smenu ========
-        if morning["status"] not in ("Ranna OK", "R+P OK") or morning["hours"] < SHIFT_HOURS:
+        if morning["status"] not in ("Ranna OK", "R+P OK"):
             st.markdown(f"#### 🌅 Doplniť rannú smenu — {pos}")
             user_code_m = st.text_input(
                 f"Zadaj čip pre rannú ({pos}, {day})",
@@ -585,7 +607,7 @@ for day in days_5d:
                     st.experimental_rerun()
 
         # ======== Doplniť poobednú smenu ========
-        if afternoon["status"] not in ("Poobedna OK", "R+P OK") or afternoon["hours"] < SHIFT_HOURS:
+        if afternoon["status"] not in ("Poobedna OK", "R+P OK"):
             st.markdown(f"#### 🌇 Doplniť poobednú smenu — {pos}")
             user_code_p = st.text_input(
                 f"Zadaj čip pre poobednú ({pos}, {day})",
