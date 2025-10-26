@@ -15,14 +15,14 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-hide_css = """
+# Skryť Streamlit menu
+st.markdown("""
 <style>
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header {visibility: hidden;}
 </style>
-"""
-st.markdown(hide_css, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # ================== SECRETS ==================
 DATABAZA_URL = st.secrets["DATABAZA_URL"]
@@ -196,213 +196,56 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
 
     return morning, afternoon, details
 
-# ================== UI & LOGIKA ==================
-# Tu vložíš pôvodný Streamlit UI kód, načítanie dát, exporty, výber týždňa, pozícií atď.
-# Funkcia summarize_position_day sa volá pri generovaní reportu.
-
-
-
-
 # ================== STREAMLIT UI ==================
-st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
+st.title("Dochádzka - Admin Report")
 
-# --- Login ---
-if "admin_logged" not in st.session_state:
-    st.session_state.admin_logged = False
+# Výber dátumu
+week_start = st.date_input("Vyber týždeň (pondelok)", value=date.today() - timedelta(days=date.today().weekday()))
+week_end = week_start + timedelta(days=7)
 
-if not st.session_state.admin_logged:
-    st.sidebar.header("Admin prihlásenie")
-    pw = st.sidebar.text_input("Heslo", type="password")
-    if st.sidebar.button("Prihlásiť"):
-        if ADMIN_PASS and pw == ADMIN_PASS:
-            st.session_state.admin_logged = True
-            st.experimental_rerun()
-        else:
-            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
-if not st.session_state.admin_logged:
-    st.stop()
+st.write(f"Report od {week_start} do {week_end - timedelta(days=1)}")
 
-# --- Výber týždňa a dňa ---
-today = datetime.now(tz).date()
-week_ref = st.sidebar.date_input(
-    "Vyber deň v týždni (týždeň začína pondelkom):",
-    value=today
+# Načítanie dát
+attendance_df = load_attendance(
+    datetime.combine(week_start, time.min),
+    datetime.combine(week_end, time.min)
 )
-monday = week_ref - timedelta(days=week_ref.weekday())
-start_dt = tz.localize(datetime.combine(monday, time(0, 0)))
-end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0, 0)))
-df_week = load_attendance(start_dt, end_dt)
 
-# 🔧 Prednastavenie denného výberu
-default_day = today if monday <= today <= monday + timedelta(days=6) else monday
-selected_day = st.sidebar.date_input(
-    "Denný prehľad - vyber deň",
-    value=default_day,
-    min_value=monday,
-    max_value=monday + timedelta(days=6)
-)
-df_day = df_week[df_week["date"] == selected_day]
-
-if df_week.empty:
-    st.warning("Rozsah nie je dostupný v DB (žiadne dáta pre vybraný týždeň).")
+if attendance_df.empty:
+    st.warning("Žiadne záznamy dochádzky v tomto týždni.")
 else:
-    summary = summarize_day(df_day, selected_day)
-
-# ================== Denný prehľad zobrazenie ==================
-st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
-cols = st.columns(3)
-day_details_rows = []
-
-for i, pos in enumerate(POSITIONS):
-    col = cols[i % 3]
-    info = summary[pos]
-    m = info["morning"]
-    p = info["afternoon"]
-
-    col.markdown(f"### **{pos}**")
-    col.markdown(f"**Ranná:** {m['status']} — {m['hours']} h")
-    col.markdown(f"**Poobedná:** {p['status']} — {p['hours']} h")
-
-    if info["details"]:
-        for d in info["details"]:
-            col.error(d)
-
-    day_details_rows.append({
-        "position": pos,
-        "morning_status": m['status'],
-        "morning_hours": m.get('hours', 0),
-        "morning_detail": m.get('detail') or "-",
-        "afternoon_status": p['status'],
-        "afternoon_hours": p.get('hours', 0),
-        "afternoon_detail": p.get('detail') or "-",
-        "total_hours": info['total_hours']
-    })
-
-    # ak ide o minulý deň, zobrazíme formuláre na doplnenie chýbajúcich záznamov
-    if selected_day < today and info["details"]:
-        for idx, d in enumerate(info["details"]):
-            if "missing_prichod" in d:
-                st.markdown(f"#### Doplniť chýbajúci PRÍCHOD pre pozíciu {pos}")
-                user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_prichod_user_{idx}")
-                hour = st.select_slider("Hodina", options=list(range(6, 23, 1)), key=f"{pos}_prichod_hour_{idx}")
-                minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{pos}_prichod_minute_{idx}")
-                if st.button(f"Uložiť príchod ({pos})", key=f"{pos}_prichod_save_{idx}"):
-                    ts = tz.localize(datetime.combine(selected_day, time(hour, minute)))
-                    save_attendance(user_code, pos, "Príchod", ts)
-                    st.success("Záznam uložený ✅")
-                    st.experimental_rerun()
-            if "missing_odchod" in d:
-                st.markdown(f"#### Doplniť chýbajúci ODCHOD pre pozíciu {pos}")
-                user_code = st.text_input(f"User code ({pos})", value="USER123456", key=f"{pos}_odchod_user_{idx}")
-                hour = st.select_slider("Hodina", options=list(range(6, 23, 1)), key=f"{pos}_odchod_hour_{idx}")
-                minute = st.select_slider("Minúta", options=[0, 15, 30, 45], key=f"{pos}_odchod_minute_{idx}")
-                if st.button(f"Uložiť odchod ({pos})", key=f"{pos}_odchod_save_{idx}"):
-                    ts = tz.localize(datetime.combine(selected_day, time(hour, minute)))
-                    save_attendance(user_code, pos, "Odchod", ts)
-                    st.success("Záznam uložený ✅")
-                    st.experimental_rerun()
-
-# ================== Týždenný prehľad ==================
-st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
-days = [monday + timedelta(days=i) for i in range(7)]
-cols_matrix = [d.strftime("%a %d.%m") for d in days]
-matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
-
-for d in days:
-    df_d = df_week[df_week["date"] == d]
-    summ = summarize_day(df_d, d)
+    report_rows = []
     for pos in POSITIONS:
-        matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else "—"
+        for single_date in pd.date_range(week_start, week_end - timedelta(days=1)):
+            day_df = attendance_df[attendance_df["date"] == single_date.date()]
+            pos_df = day_df[day_df["position"] == pos]
+            morning, afternoon, details = summarize_position_day(pos_df, pos)
+            report_rows.append({
+                "Dátum": single_date.date(),
+                "Pozícia": pos,
+                "Ranná stav": morning["status"],
+                "Ranná hodiny": morning["hours"],
+                "Poobedná stav": afternoon["status"],
+                "Poobedná hodiny": afternoon["hours"],
+                "Detail": morning["detail"] or afternoon["detail"]
+            })
 
-matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x, (int, float)) else 0 for x in row), axis=1)
-st.dataframe(matrix.fillna("—"), use_container_width=True)
+    report_df = pd.DataFrame(report_rows)
+    st.dataframe(report_df)
 
-# ================== Export Excel ==================
-if st.button("Exportuj Excel (Farebné)"):
-    df_matrix = matrix.reset_index().rename(columns={"index": "position"})
-    df_day_details = pd.DataFrame(day_details_rows)
-    df_raw = df_week.copy()
-    if "timestamp" in df_raw.columns:
-        df_raw["timestamp"] = df_raw["timestamp"].apply(lambda x: x.isoformat() if pd.notna(x) else "")
-    xls = excel_with_colors(df_matrix, df_day_details, df_raw, monday)
+    # Export do Excel
+    def to_excel(df):
+        output = BytesIO()
+        writer = pd.ExcelWriter(output, engine="openpyxl")
+        df.to_excel(writer, index=False, sheet_name="Dochadzka")
+        writer.save()
+        processed_data = output.getvalue()
+        return processed_data
+
+    excel_data = to_excel(report_df)
     st.download_button(
-        "Stiahnuť XLSX",
-        data=xls,
-        file_name=f"dochadzka_{monday}.xlsx",
+        label="Export do Excel",
+        data=excel_data,
+        file_name=f"Dochadzka_{week_start}_{week_end - timedelta(days=1)}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-# --- dvojtýždňová kontrola duplicít (voliteľné zobrazenie) ---
-start_2w = today - timedelta(days=7)
-start_dt_2w = tz.localize(datetime.combine(start_2w, time(0, 0)))
-end_dt_2w = tz.localize(datetime.combine(today + timedelta(days=1), time(0, 0)))
-df_2w = load_attendance(start_dt_2w, end_dt_2w)
-
-df_2w_summary = []
-for pos in POSITIONS:
-    pos_df = df_2w[df_2w["position"] == pos] if not df_2w.empty else pd.DataFrame()
-    pairs = get_user_pairs(pos_df)
-    for user, pair in pairs.items():
-        pr_count = pair["pr_count"]
-        od_count = pair["od_count"]
-        if pr_count != 1 or od_count != 1:
-            df_2w_summary.append({
-                "position": pos,
-                "user_code": user,
-                "pr_count": pr_count,
-                "od_count": od_count,
-                "first_pr": pair["pr"],
-                "last_od": pair["od"]
-            })
-# --- posledných 5 dní (okrem dnes) ---
-start_5d = today - timedelta(days=5)
-days_5d = [start_5d + timedelta(days=i) for i in range(5)]
-
-st.subheader("📝 Doplnkové smeny za posledných 5 dní")
-
-for day in days_5d:
-    st.markdown(f"### 📅 {day.strftime('%A %d.%m.%Y')}")
-    df_day = df_week[df_week["date"] == day] if not df_week.empty else pd.DataFrame()
-    summary = summarize_day(df_day, day)
-
-    for pos in POSITIONS:
-        morning = summary[pos]["morning"]
-        afternoon = summary[pos]["afternoon"]
-
-        # ======== Doplniť rannú smenu ========
-        if morning["status"] not in ("Ranna OK", "R+P OK"):
-            st.markdown(f"#### 🌅 Doplniť rannú smenu — {pos}")
-            user_code_m = st.text_input(
-                f"Zadaj čip pre rannú ({pos}, {day})",
-                key=f"user_m_{pos}_{day}"
-            )
-            if st.button(f"💾 Uložiť rannú — {pos} ({day})", key=f"{pos}_morning_btn_{day}"):
-                if not user_code_m.strip():
-                    st.warning("⚠️ Zadaj čip používateľa!")
-                else:
-                    ts_pr = tz.localize(datetime.combine(day, time(6, 0, 0, 123456)))
-                    ts_od = tz.localize(datetime.combine(day, time(14, 0, 0, 654321)))
-                    save_attendance(user_code_m, pos, "Príchod", ts_pr)
-                    save_attendance(user_code_m, pos, "Odchod", ts_od)
-                    st.success(f"Ranná smena pre {pos} uložená ✅")
-                    st.experimental_rerun()
-
-        # ======== Doplniť poobednú smenu ========
-        if afternoon["status"] not in ("Poobedna OK", "R+P OK"):
-            st.markdown(f"#### 🌇 Doplniť poobednú smenu — {pos}")
-            user_code_p = st.text_input(
-                f"Zadaj čip pre poobednú ({pos}, {day})",
-                key=f"user_p_{pos}_{day}"
-            )
-            if st.button(f"💾 Uložiť poobednú — {pos} ({day})", key=f"{pos}_afternoon_btn_{day}"):
-                if not user_code_p.strip():
-                    st.warning("⚠️ Zadaj čip používateľa!")
-                else:
-                    ts_pr = tz.localize(datetime.combine(day, time(14, 0, 0, 234567)))
-                    ts_od = tz.localize(datetime.combine(day, time(22, 0, 0, 987654)))
-                    save_attendance(user_code_p, pos, "Príchod", ts_pr)
-                    save_attendance(user_code_p, pos, "Odchod", ts_od)
-                    st.success(f"Poobedná smena pre {pos} uložená ✅")
-                    st.experimental_rerun()
-
-
