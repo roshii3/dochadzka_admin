@@ -201,50 +201,6 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
     return results
 
 # ================== Týždenný prehľad + AMAZON ==================
-def weekly_matrix_with_amazon(df_week, monday):
-    days = [monday + timedelta(days=i) for i in range(7)]
-    cols_matrix = [d.strftime("%a %d.%m") for d in days]
-    
-    # pôvodné pozície + AMAZON1 a AMAZON2
-    all_positions = POSITIONS + ["AMAZON1", "AMAZON2"]
-    matrix = pd.DataFrame(index=all_positions, columns=cols_matrix)
-
-    # vyplnenie pôvodných pozícií
-    for d in days:
-        df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
-        summ = summarize_day(df_d, d)
-        for pos in POSITIONS:
-            val = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else "—"
-            matrix.at[pos, d.strftime("%a %d.%m")] = val
-
-    # AMAZON1 a AMAZON2
-    for i, d in enumerate(days):
-        amazon_hours = []
-        df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
-        for pos in POSITIONS:
-            pos_df = df_d[df_d["position"] == pos]
-            pairs = get_user_pairs(pos_df)
-            for user, pair in pairs.items():
-                if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
-                    # AMAZON smena 22:00-2:00
-                    pr_dt = pair["pr"]
-                    od_dt = pair["od"]
-                    shift_start = datetime.combine(od_dt.date(), time(22,0), tzinfo=od_dt.tzinfo)
-                    shift_end = shift_start + timedelta(hours=4)
-                    actual_start = max(pr_dt, shift_start)
-                    actual_end = min(od_dt, shift_end)
-                    if actual_end > actual_start:
-                        amazon_hours.append(round((actual_end - actual_start).total_seconds()/3600,2))
-        # zorad a doplň do AMAZON1 a AMAZON2
-        amazon_hours.sort(reverse=True)
-        matrix.iat[matrix.index.get_loc("AMAZON1"), i] = amazon_hours[0] if len(amazon_hours) > 0 else "—"
-        matrix.iat[matrix.index.get_loc("AMAZON2"), i] = amazon_hours[1] if len(amazon_hours) > 1 else "—"
-
-    # vypocet Spolu
-    matrix["Spolu"] = matrix.apply(lambda row: sum(x for x in row if isinstance(x,(int,float))), axis=1)
-    return matrix
-
-
 
 # ================== STREAMLIT UI ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
@@ -261,6 +217,51 @@ end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0, 0)))
 df_week = load_attendance(start_dt, end_dt)
 
 # --- Týždenný prehľad ---
-matrix = weekly_matrix_with_amazon(df_week, monday)
+# ================== Týždenný prehľad ==================
 st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
+
+def weekly_matrix_with_amazon(df_week, monday):
+    days = [monday + timedelta(days=i) for i in range(7)]
+    cols_matrix = [d.strftime("%a %d.%m") for d in days]
+    
+    # pôvodné pozície + AMAZON1 a AMAZON2
+    all_positions = POSITIONS + ["AMAZON1", "AMAZON2"]
+    matrix = pd.DataFrame(index=all_positions, columns=cols_matrix)
+
+    # vyplnenie pôvodných pozícií
+    for d in days:
+        df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
+        summ = summarize_day(df_d, d)
+        for pos in POSITIONS:
+            val = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else "—"
+            matrix.at[pos, d.strftime("%a %d.%m")] = val
+
+    # AMAZON1 a AMAZON2 (22:00-02:00)
+    for i, d in enumerate(days):
+        amazon_hours = []
+        df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
+        for pos in POSITIONS:
+            pos_df = df_d[df_d["position"] == pos]
+            pairs = get_user_pairs(pos_df)
+            for user, pair in pairs.items():
+                if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
+                    pr_dt = pair["pr"]
+                    od_dt = pair["od"]
+                    # AMAZON smena je od 22:00 do 02:00 nasledujúceho dňa
+                    shift_start = datetime.combine(pr_dt.date(), time(22,0), tzinfo=pr_dt.tzinfo)
+                    shift_end = shift_start + timedelta(hours=4)
+                    actual_start = max(pr_dt, shift_start)
+                    actual_end = min(od_dt, shift_end)
+                    if actual_end > actual_start:
+                        amazon_hours.append(round((actual_end - actual_start).total_seconds()/3600,2))
+        # zorad a doplň do AMAZON1 a AMAZON2
+        amazon_hours.sort(reverse=True)
+        matrix.iat[matrix.index.get_loc("AMAZON1"), i] = amazon_hours[0] if len(amazon_hours) > 0 else "—"
+        matrix.iat[matrix.index.get_loc("AMAZON2"), i] = amazon_hours[1] if len(amazon_hours) > 1 else "—"
+
+    # vypocet Spolu
+    matrix["Spolu"] = matrix.apply(lambda row: sum(x for x in row if isinstance(x,(int,float))), axis=1)
+    return matrix
+
+matrix = weekly_matrix_with_amazon(df_week, monday)
 st.dataframe(matrix.fillna("—"), use_container_width=True)
