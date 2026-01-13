@@ -40,7 +40,7 @@ POSITIONS = [
 SHIFT_HOURS = 7.5
 DOUBLE_SHIFT_HOURS = 15.25
 VELITEL_DOUBLE = 16.25
-SWAP_WINDOW_MINUTES = 30  # 30 minút
+SWAP_WINDOW_MINUTES = 30  # medzera medzi intervalmi pre merge
 
 # ================== HELPERS ==================
 def load_attendance(start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
@@ -94,105 +94,121 @@ def merge_intervals(pairs):
     return merged
 
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
-    morning_hours = 0.0
-    amazon_intervals = []
+    """
+    Zhrnie jednu pozíciu za deň.
+    Nová logika AMAZON1/2 pre smenu 22:00–02:00
+    """
+    morning = {"status": "absent", "hours": 0.0, "detail": None}
+    afternoon = {"status": "absent", "hours": 0.0, "detail": None}
+    amazon1 = {"status": "absent", "hours": 0.0, "detail": None}
+    amazon2 = {"status": "absent", "hours": 0.0, "detail": None}
+    details = []
 
     if pos_day_df.empty:
-        return {"hours": 0.0, "detail": "-"}, [{"status": "AMAZON1", "hours": 0.0}, {"status": "AMAZON2", "hours": 0.0}]
+        return morning, afternoon, amazon1, amazon2, details
 
     pairs = get_user_pairs(pos_day_df)
     merged = merge_intervals(pairs)
 
+    morning_hours = 0.0
+    afternoon_hours = 0.0
+    night_shifts = []
+
     for start, end in merged:
-        day_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
-        day_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
-        amazon_start = day_end
-        amazon_end = amazon_start + timedelta(hours=4)
+        # Ranné okno
+        mor_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
+        mor_end   = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)  # do 22:00
 
-        inter_start = max(start, day_start)
-        inter_end = min(end, day_end)
+        # intersect ranná/poobedná
+        inter_start = max(start, mor_start)
+        inter_end   = min(end, mor_end)
         if inter_end > inter_start:
-            morning_hours += (inter_end - inter_start).total_seconds()/3600
+            morning_hours += (inter_end - inter_start).total_seconds() / 3600
 
-        inter_start = max(start, amazon_start)
-        inter_end = min(end, amazon_end)
+        # Nočná AMAZON (22:00–02:00)
+        night_start = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
+        night_end   = datetime.combine(start.date() + timedelta(days=1), time(2,0)).replace(tzinfo=start.tzinfo)
+        inter_start = max(start, night_start)
+        inter_end   = min(end, night_end)
         if inter_end > inter_start:
-            amazon_intervals.append((inter_start, inter_end))
+            night_shifts.append((inter_start, inter_end))
 
-    morning = {"hours": round(morning_hours, 2),
-               "detail": " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()]) if pairs else "-"}
+    morning_hours = round(morning_hours,2)
+    if morning_hours > 0:
+        morning = {"status": "Prítomný", "hours": morning_hours, "detail": " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])}
 
-    amazon1_total = 0.0
-    amazon2_total = 0.0
-    for i, (s,e) in enumerate(amazon_intervals):
-        h = round((e-s).total_seconds()/3600, 2)
-        if i%2==0:
-            amazon1_total += h
-        else:
-            amazon2_total += h
+    # rozdeľ nočné smeny na AMAZON1 a AMAZON2 podľa poradia odchodov
+    night_shifts.sort(key=lambda x: x[1])
+    if len(night_shifts) >= 1:
+        h = round((night_shifts[0][1]-night_shifts[0][0]).total_seconds()/3600,2)
+        amazon1 = {"status":"Nočná", "hours":h, "detail": " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])}
+    if len(night_shifts) >= 2:
+        h = round((night_shifts[1][1]-night_shifts[1][0]).total_seconds()/3600,2)
+        amazon2 = {"status":"Nočná", "hours":h, "detail": " + ".join([f"{u}: {p['pr']}–{p['od']}" for u,p in pairs.items()])}
 
-    amazon_hours = [
-        {"status": "AMAZON1", "hours": round(amazon1_total,2)},
-        {"status": "AMAZON2", "hours": round(amazon2_total,2)}
-    ]
-    return morning, amazon_hours
+    return morning, afternoon, amazon1, amazon2, details
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
     for pos in POSITIONS:
-        pos_df = df_day[df_day["position"]==pos] if not df_day.empty else pd.DataFrame()
-        morning, amazon = summarize_position_day(pos_df, pos)
-        total = morning["hours"] + sum(a["hours"] for a in amazon)
-        results[pos] = {"morning": morning, "amazon": amazon, "total_hours": round(total,2)}
+        pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
+        morning, afternoon, amazon1, amazon2, details = summarize_position_day(pos_df, pos)
+        total_hours = morning.get("hours",0) + afternoon.get("hours",0) + amazon1.get("hours",0) + amazon2.get("hours",0)
+        results[pos] = {
+            "morning": morning,
+            "afternoon": afternoon,
+            "amazon1": amazon1,
+            "amazon2": amazon2,
+            "details": details,
+            "total_hours": round(total_hours,2)
+        }
     return results
 
-def generate_weekly_matrix(df_week, monday):
-    days = [monday + timedelta(days=i) for i in range(7)]
-    cols_matrix = [d.strftime("%a %d.%m") for d in days]
-    matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
-    amazon1_total = [0]*7
-    amazon2_total = [0]*7
+# ================== STREAMLIT UI ==================
+st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
-    for i, d in enumerate(days):
-        df_d = df_week[df_week["date"]==d] if not df_week.empty else pd.DataFrame()
-        summ = summarize_day(df_d, d)
-        for pos in POSITIONS:
-            matrix.at[pos, cols_matrix[i]] = summ[pos]["total_hours"] if summ[pos]["total_hours"]>0 else "—"
-            amazon1_total[i] += sum(a["hours"] for a in summ[pos]["amazon"][:1])
-            amazon2_total[i] += sum(a["hours"] for a in summ[pos]["amazon"][1:])
+# --- Login ---
+if "admin_logged" not in st.session_state:
+    st.session_state.admin_logged = False
+if not st.session_state.admin_logged:
+    st.sidebar.header("Admin prihlásenie")
+    pw = st.sidebar.text_input("Heslo", type="password")
+    if st.sidebar.button("Prihlásiť"):
+        if ADMIN_PASS and pw == ADMIN_PASS:
+            st.session_state.admin_logged = True
+            st.experimental_rerun()
+        else:
+            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
+if not st.session_state.admin_logged:
+    st.stop()
 
-    matrix.loc["AMAZON1"] = [round(h,2) if h>0 else "—" for h in amazon1_total]
-    matrix.loc["AMAZON2"] = [round(h,2) if h>0 else "—" for h in amazon2_total]
+# --- Výber týždňa a dňa ---
+today = datetime.now(tz).date()
+week_ref = st.sidebar.date_input("Vyber deň v týždni (pondelok)", value=today)
+monday = week_ref - timedelta(days=week_ref.weekday())
+start_dt = tz.localize(datetime.combine(monday, time(0,0)))
+end_dt   = tz.localize(datetime.combine(monday+timedelta(days=7), time(0,0)))
+df_week = load_attendance(start_dt, end_dt)
 
-    matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x,(int,float)) else 0 for x in row), axis=1)
-    return matrix
+# Denný výber
+default_day = today if monday <= today <= monday + timedelta(days=6) else monday
+selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=default_day, min_value=monday, max_value=monday+timedelta(days=6))
+df_day = df_week[df_week["date"]==selected_day] if not df_week.empty else pd.DataFrame()
+summary = summarize_day(df_day, selected_day) if not df_week.empty else {}
 
-# ================== Streamlit UI ==================
-st.title("Týždenný prehľad dochádzky")
+# ================== Týždenný prehľad ==================
+st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday+timedelta(days=6)).strftime('%d.%m.%Y')})")
+days = [monday+timedelta(days=i) for i in range(7)]
+cols_matrix = [d.strftime("%a %d.%m") for d in days]
+matrix = pd.DataFrame(index=POSITIONS+["AMAZON1","AMAZON2"], columns=cols_matrix)
 
-today = date.today()
-monday = today - timedelta(days=today.weekday())
-sunday = monday + timedelta(days=6)
+for d in days:
+    df_d = df_week[df_week["date"]==d] if not df_week.empty else pd.DataFrame()
+    summ = summarize_day(df_d, d) if not df_week.empty else {}
+    for pos in POSITIONS:
+        matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if pos in summ else 0
+        matrix.at["AMAZON1", d.strftime("%a %d.%m")] = summ[pos]["amazon1"]["hours"] if pos in summ else 0
+        matrix.at["AMAZON2", d.strftime("%a %d.%m")] = summ[pos]["amazon2"]["hours"] if pos in summ else 0
 
-df_week = load_attendance(datetime.combine(monday,time.min), datetime.combine(sunday,time.max))
-weekly_matrix = generate_weekly_matrix(df_week, monday)
-
-st.dataframe(weekly_matrix)
-
-# Export do Excelu
-def excel_export(matrix):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Týždenný prehľad"
-    for r in dataframe_to_rows(matrix, index=True, header=True):
-        ws.append(r)
-    for col in ws.columns:
-        for cell in col:
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return bio
-
-bio = excel_export(weekly_matrix)
-st.download_button("Export do Excelu", data=bio, file_name="tyzdenny_prehlad.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x,(int,float)) else 0 for x in row), axis=1)
+st.dataframe(matrix.fillna("—"), use_container_width=True)
