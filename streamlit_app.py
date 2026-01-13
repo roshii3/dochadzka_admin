@@ -89,16 +89,20 @@ def classify_pair(pr, od, position):
     pr_t = pr.time()
     od_t = od.time()
 
+    # Veliteľ má špeciálne hodiny
     if position.lower().startswith("vel"):
         if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
             return ("R+P OK", "R+P OK", VELITEL_DOUBLE, VELITEL_DOUBLE, msgs)
 
+    # Dvojitá smena (non-veliteľ)
     if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
         return ("R+P OK", "R+P OK", DOUBLE_SHIFT_HOURS, DOUBLE_SHIFT_HOURS, msgs)
 
+    # Ranná
     if pr_t <= time(7, 0) and od_t <= time(15, 0):
         return ("Ranna OK", "none", SHIFT_HOURS, 0.0, msgs)
 
+    # Poobedná
     if pr_t >= time(13, 0) and od_t >= time(21, 0):
         return ("none", "Poobedna OK", 0.0, SHIFT_HOURS, msgs)
 
@@ -147,64 +151,26 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         afternoon = {"status": "R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
         return morning, afternoon, details
 
-    had_invalid_or_missing = False
-    for user, pair in pairs.items():
-        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
-        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
-            morning = {"status": "Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
-        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
-            afternoon = {"status": "Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
-        if msgs:
-            had_invalid_or_missing = True
-            for m in msgs:
-                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
-
+    # pôvodná logika, merge_intervals a výpočet hodín
     merged = merge_intervals(pairs)
     total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2) if merged else 0.0
 
-    if not merged:
-        return morning, afternoon, details
-
-    if position.lower().startswith("vel"):
-        double_threshold = VELITEL_DOUBLE
-    else:
-        double_threshold = DOUBLE_SHIFT_HOURS
-
-    earliest = min(s[0] for s in merged)
-    latest = max(s[1] for s in merged)
-    e_t = earliest.time()
-    l_t = latest.time()
-
-    if e_t <= time(7, 0) and (l_t >= time(21, 0) or l_t < time(2, 0)) and total_hours >= double_threshold - 0.01:
-        morning["status"] = "R+P OK"
-        afternoon["status"] = "R+P OK"
-        morning["hours"] = round(total_hours / 2, 2)
-        afternoon["hours"] = round(total_hours / 2, 2)
-        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
-        afternoon["detail"] = morning["detail"]
-        return morning, afternoon, details
-
-    # Rozdelenie podľa ranného a poobedného okna
     morning_hours = 0.0
     afternoon_hours = 0.0
     for start, end in merged:
         morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
-        morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
-        afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-        afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
-
+        morning_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
+        # intersect with morning window (06-22)
         inter_start = max(start, morning_window_start)
         inter_end = min(end, morning_window_end)
         if inter_end > inter_start:
-            morning_hours += (inter_end - inter_start).total_seconds() / 3600
+            if inter_start.time() < time(22,0):
+                morning_hours += (min(inter_end, datetime.combine(start.date(), time(22,0), tzinfo=start.tzinfo)) - inter_start).total_seconds()/3600
+            if inter_end.time() > time(22,0):
+                afternoon_hours += (inter_end - max(inter_start, datetime.combine(start.date(), time(22,0), tzinfo=start.tzinfo))).total_seconds()/3600
 
-        inter_start = max(start, afternoon_window_start)
-        inter_end = min(end, afternoon_window_end)
-        if inter_end > inter_start:
-            afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
-
-    morning_hours = round(morning_hours, 2)
-    afternoon_hours = round(afternoon_hours, 2)
+    morning_hours = round(morning_hours,2)
+    afternoon_hours = round(afternoon_hours,2)
 
     if morning_hours > 0:
         morning["status"] = "Čiastočná"
@@ -215,11 +181,6 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         afternoon["hours"] = afternoon_hours
         afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
 
-    if morning_hours == 0 and afternoon_hours == 0:
-        morning["status"] = "absent"
-        morning["hours"] = total_hours
-        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
-
     return morning, afternoon, details
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
@@ -229,11 +190,8 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         morning, afternoon, details = summarize_position_day(pos_df, pos)
         if morning["status"] == "R+P OK" and afternoon["status"] == "R+P OK":
             total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
-        elif morning["status"] in ("Ranna OK", "R+P OK") and afternoon["status"] in ("Poobedna OK", "R+P OK"):
-            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
         else:
-            total = morning.get("hours", 0.0) + afternoon.get("hours", 0.0)
-
+            total = morning.get("hours", 0) + afternoon.get("hours", 0)
         results[pos] = {
             "morning": morning,
             "afternoon": afternoon,
@@ -242,95 +200,64 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
         }
     return results
 
-def save_attendance(user_code, position, action, now=None):
-    user_code = user_code.strip()
-    if not now:
-        now = datetime.now(tz)
-    if now.second == 0 and now.microsecond == 0:
-        current = datetime.now(tz)
-        now = now.replace(second=current.second, microsecond=current.microsecond)
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f") + "+00"
-    databaze.table("attendance").insert({
-        "user_code": user_code,
-        "position": position,
-        "action": action,
-        "timestamp": ts_str,
-        "valid": True
-    }).execute()
-    return True
+# ================== Týždenný prehľad + AMAZON ==================
+def weekly_matrix_with_amazon(df_week, monday):
+    days = [monday + timedelta(days=i) for i in range(7)]
+    cols_matrix = [d.strftime("%a %d.%m") for d in days]
+    matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
 
-# ================== UI ==================
+    # vyplnenie pôvodných pozícií
+    for d in days:
+        df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
+        summ = summarize_day(df_d, d)
+        for pos in POSITIONS:
+            val = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else "—"
+            matrix.at[pos, d.strftime("%a %d.%m")] = val
+
+    # AMAZON1 a AMAZON2
+    amazon_rows = {"AMAZON1": [], "AMAZON2": []}
+    for d in days:
+        df_d_prev = df_week[df_week["date"] == d - timedelta(days=1)] if not df_week.empty else pd.DataFrame()
+        df_d_curr = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
+        amazon_candidates = []
+        for pos in POSITIONS:
+            pos_df = pd.concat([df_d_prev[df_d_prev["position"] == pos], df_d_curr[df_d_curr["position"] == pos]])
+            pairs = get_user_pairs(pos_df)
+            for user, pair in pairs.items():
+                if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
+                    pr_dt = pair["pr"]
+                    od_dt = pair["od"]
+                    shift_start = datetime.combine(od_dt.date(), time(22,0), tzinfo=od_dt.tzinfo)
+                    shift_end = shift_start + timedelta(hours=4)
+                    actual_start = max(pr_dt, shift_start)
+                    actual_end = min(od_dt, shift_end)
+                    if actual_end > actual_start:
+                        hours = round((actual_end - actual_start).total_seconds()/3600,2)
+                        amazon_candidates.append(hours)
+        amazon_candidates.sort(reverse=True)
+        amazon_rows["AMAZON1"].append(amazon_candidates[0] if len(amazon_candidates) > 0 else "—")
+        amazon_rows["AMAZON2"].append(amazon_candidates[1] if len(amazon_candidates) > 1 else "—")
+
+    matrix.loc["AMAZON1"] = amazon_rows["AMAZON1"]
+    matrix.loc["AMAZON2"] = amazon_rows["AMAZON2"]
+    matrix["Spolu"] = matrix.apply(lambda row: sum(x for x in row if isinstance(x,(int,float))), axis=1)
+    return matrix
+
+# ================== STREAMLIT UI ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
-if "admin_logged" not in st.session_state:
-    st.session_state.admin_logged = False
-
-if not st.session_state.admin_logged:
-    st.sidebar.header("Admin prihlásenie")
-    pw = st.sidebar.text_input("Heslo", type="password")
-    if st.sidebar.button("Prihlásiť"):
-        if ADMIN_PASS and pw == ADMIN_PASS:
-            st.session_state.admin_logged = True
-            st.experimental_rerun()
-        else:
-            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
-if not st.session_state.admin_logged:
-    st.stop()
-
+# --- Výber týždňa ---
 today = datetime.now(tz).date()
-week_ref = st.sidebar.date_input("Vyber deň v týždni (týždeň začína pondelkom):", value=today)
+week_ref = st.sidebar.date_input(
+    "Vyber deň v týždni (týždeň začína pondelkom):",
+    value=today
+)
 monday = week_ref - timedelta(days=week_ref.weekday())
 start_dt = tz.localize(datetime.combine(monday, time(0, 0)))
 end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0, 0)))
 df_week = load_attendance(start_dt, end_dt)
 
-default_day = today if monday <= today <= monday + timedelta(days=6) else monday
-selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=default_day,
-                                     min_value=monday, max_value=monday + timedelta(days=6))
-df_day = df_week[df_week["date"] == selected_day] if not df_week.empty else pd.DataFrame()
-
-if df_week.empty:
-    st.warning("Rozsah nie je dostupný v DB (žiadne dáta pre vybraný týždeň).")
-else:
-    summary = summarize_day(df_day, selected_day)
-
-# ================== Týždenný prehľad s AMAZON ==================
+# --- Týždenný prehľad ---
+matrix = weekly_matrix_with_amazon(df_week, monday)
 st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
-days = [monday + timedelta(days=i) for i in range(7)]
-cols_matrix = [d.strftime("%a %d.%m") for d in days]
-matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
-
-for d in days:
-    df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
-    summ = summarize_day(df_d, d)
-    for pos in POSITIONS:
-        matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else "—"
-
-# --- AMAZON1 a AMAZON2 ---
-amazon_rows = {"AMAZON1": {}, "AMAZON2": {}}
-for d in days:
-    df_d_prev = df_week[df_week["date"] == d - timedelta(days=1)] if not df_week.empty else pd.DataFrame()
-    df_d_curr = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
-    amazon_candidates = []
-    for pos in POSITIONS:
-        pos_df = pd.concat([df_d_prev[df_d_prev["position"] == pos], df_d_curr[df_d_curr["position"] == pos]])
-        pairs = get_user_pairs(pos_df)
-        for user, pair in pairs.items():
-            if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
-                pr_dt = pair["pr"]
-                od_dt = pair["od"]
-                shift_start = datetime.combine(od_dt.date(), time(22,0), tzinfo=od_dt.tzinfo)
-                shift_end = shift_start + timedelta(hours=4)
-                actual_start = max(pr_dt, shift_start)
-                actual_end = min(od_dt, shift_end)
-                if actual_end > actual_start:
-                    hours = round((actual_end - actual_start).total_seconds()/3600,2)
-                    amazon_candidates.append((user, hours))
-    amazon_candidates.sort(key=lambda x: x[1], reverse=True)
-    amazon_rows["AMAZON1"][d.strftime("%a %d.%m")] = amazon_candidates[0][1] if len(amazon_candidates) > 0 else "—"
-    amazon_rows["AMAZON2"][d.strftime("%a %d.%m")] = amazon_candidates[1][1] if len(amazon_candidates) > 1 else "—"
-
-matrix = pd.concat([matrix, pd.DataFrame(amazon_rows).T])
-matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x, (int,float)) else 0 for x in row), axis=1)
-
 st.dataframe(matrix.fillna("—"), use_container_width=True)
