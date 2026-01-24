@@ -8,6 +8,12 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment
 from openpyxl.utils.dataframe import dataframe_to_rows
 
+import streamlit as st
+
+st._config.set_option("server.enableWatchdog", False)
+st._config.set_option("server.runOnSave", False)
+
+
 st.set_page_config(page_title="Admin - Dochádzka", layout="wide", initial_sidebar_state="expanded")
 st.markdown("<style>#MainMenu{visibility:hidden;}footer{visibility:hidden;}header{visibility:hidden;}</style>", unsafe_allow_html=True)
 
