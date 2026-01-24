@@ -89,40 +89,25 @@ def classify_pair(pr, od, position):
     pr_t = pr.time()
     od_t = od.time()
 
+    # Veliteľ má špeciálne hodiny
     if position.lower().startswith("vel"):
         if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
             return ("R+P OK", "R+P OK", VELITEL_DOUBLE, VELITEL_DOUBLE, msgs)
 
+    # Dvojitá smena (non-veliteľ)
     if pr_t <= time(7, 0) and (od_t >= time(21, 0) or od_t < time(2, 0)):
         return ("R+P OK", "R+P OK", DOUBLE_SHIFT_HOURS, DOUBLE_SHIFT_HOURS, msgs)
 
+    # Ranná
     if pr_t <= time(7, 0) and od_t <= time(15, 0):
         return ("Ranna OK", "none", SHIFT_HOURS, 0.0, msgs)
 
+    # Poobedná
     if pr_t >= time(13, 0) and od_t >= time(21, 0):
         return ("none", "Poobedna OK", 0.0, SHIFT_HOURS, msgs)
 
     msgs.append("invalid_times")
     return ("invalid", "invalid", 0.0, 0.0, msgs)
-
-def merge_intervals(pairs):
-    intervals = []
-    for pair in pairs.values():
-        if pd.notna(pair["pr"]) and pd.notna(pair["od"]):
-            intervals.append((pair["pr"], pair["od"]))
-    if not intervals:
-        return []
-
-    intervals.sort(key=lambda x: x[0])
-    merged = [intervals[0]]
-    for start, end in intervals[1:]:
-        last_start, last_end = merged[-1]
-        gap_min = (start - last_end).total_seconds() / 60
-        if gap_min <= SWAP_WINDOW_MINUTES:
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    return merged
 
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
     morning = {"status": "absent", "hours": 0.0, "detail": None}
@@ -133,6 +118,7 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         return morning, afternoon, details
 
     pairs = get_user_pairs(pos_day_df)
+
     rp_user = None
     for user, pair in pairs.items():
         role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
@@ -146,39 +132,15 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         afternoon = {"status": "R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
         return morning, afternoon, details
 
-    # fallback - zlúčenie intervalov
-    merged = merge_intervals(pairs)
-    total_hours = round(sum((end - start).total_seconds() / 3600 for start, end in merged), 2) if merged else 0.0
-
-    morning_hours = 0.0
-    afternoon_hours = 0.0
-    for start, end in merged:
-        morning_window_start = datetime.combine(start.date(), time(6,0)).replace(tzinfo=start.tzinfo)
-        morning_window_end = datetime.combine(start.date(), time(15,0)).replace(tzinfo=start.tzinfo)
-        afternoon_window_start = datetime.combine(start.date(), time(13,0)).replace(tzinfo=start.tzinfo)
-        afternoon_window_end = datetime.combine(start.date(), time(22,0)).replace(tzinfo=start.tzinfo)
-
-        inter_start = max(start, morning_window_start)
-        inter_end = min(end, morning_window_end)
-        if inter_end > inter_start:
-            morning_hours += (inter_end - inter_start).total_seconds() / 3600
-
-        inter_start = max(start, afternoon_window_start)
-        inter_end = min(end, afternoon_window_end)
-        if inter_end > inter_start:
-            afternoon_hours += (inter_end - inter_start).total_seconds() / 3600
-
-    morning_hours = round(morning_hours,2)
-    afternoon_hours = round(afternoon_hours,2)
-
-    if morning_hours > 0:
-        morning["status"] = "Čiastočná"
-        morning["hours"] = morning_hours
-        morning["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
-    if afternoon_hours > 0:
-        afternoon["status"] = "Čiastočná"
-        afternoon["hours"] = afternoon_hours
-        afternoon["detail"] = " + ".join([f"{u}: {p['pr']}–{p['od']}" for u, p in pairs.items()])
+    for user, pair in pairs.items():
+        role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
+        if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
+            morning = {"status": "Ranna OK", "hours": h_m, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if role_p == "Poobedna OK" and afternoon["status"] not in ("Poobedna OK", "R+P OK"):
+            afternoon = {"status": "Poobedna OK", "hours": h_p, "detail": f"{user}: Príchod: {pair['pr']}, Odchod: {pair['od']}"}
+        if msgs:
+            for m in msgs:
+                details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
 
     return morning, afternoon, details
 
@@ -187,115 +149,68 @@ def summarize_day(df_day: pd.DataFrame, target_date: date):
     for pos in POSITIONS:
         pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
         morning, afternoon, details = summarize_position_day(pos_df, pos)
-
-        if morning["status"] == "R+P OK" and afternoon["status"] == "R+P OK":
-            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
-        elif morning["status"] in ("Ranna OK", "R+P OK") and afternoon["status"] in ("Poobedna OK", "R+P OK"):
-            total = VELITEL_DOUBLE if pos.lower().startswith("vel") else DOUBLE_SHIFT_HOURS
-        else:
-            total = morning.get("hours",0.0) + afternoon.get("hours",0.0)
-
+        total = morning.get("hours", 0.0) + afternoon.get("hours", 0.0)
         results[pos] = {
             "morning": morning,
             "afternoon": afternoon,
             "details": details,
-            "total_hours": round(total,2)
+            "total_hours": round(total, 2)
         }
     return results
 
-def save_attendance(user_code, position, action, now=None):
-    user_code = user_code.strip()
-    if not now:
-        now = datetime.now(tz)
-    ts_str = now.strftime("%Y-%m-%d %H:%M:%S.%f") + "+00"
-    databaze.table("attendance").insert({
-        "user_code": user_code,
-        "position": position,
-        "action": action,
-        "timestamp": ts_str,
-        "valid": True
-    }).execute()
-    return True
-
-def export_excel(matrix_df, df_week):
-    wb = Workbook()
-    
-    # --- Týždenný prehľad ---
-    ws1 = wb.active
-    ws1.title = "Tyzdenny prehlad"
-    for r in dataframe_to_rows(matrix_df.fillna("—"), index=True, header=True):
-        ws1.append(r)
-    for cell in ws1[1]:
-        cell.fill = PatternFill("solid", fgColor="FFC000")
-        cell.alignment = Alignment(horizontal="center")
-    for row in ws1.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(horizontal="center")
-    
-    # --- Denné detaily ---
-    ws2 = wb.create_sheet("Denne detaily")
-    if not df_week.empty:
-        df_week_sorted = df_week.sort_values(["date", "position", "user_code"])
-        for r in dataframe_to_rows(df_week_sorted, index=False, header=True):
-            ws2.append(r)
-    for cell in ws2[1]:
-        cell.fill = PatternFill("solid", fgColor="92D050")
-        cell.alignment = Alignment(horizontal="center")
-    
-    # --- Surové dáta ---
-    ws3 = wb.create_sheet("Surove data")
-    if not df_week.empty:
-        for r in dataframe_to_rows(df_week, index=False, header=True):
-            ws3.append(r)
-    
-    # --- Rozpis čipov (dummy) ---
-    ws4 = wb.create_sheet("Rozpis cipu")
-    ws4.append(["UserCode", "Position", "ChipID"])
-    
-    stream = BytesIO()
-    wb.save(stream)
-    return stream
-
 # ================== STREAMLIT UI ==================
-st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad + Export)")
+st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
 
-# --- Admin login ---
-if "admin_logged" not in st.session_state:
-    st.session_state.admin_logged = False
-
-if not st.session_state.admin_logged:
-    st.sidebar.header("Admin prihlásenie")
-    pw = st.sidebar.text_input("Heslo", type="password")
-    if st.sidebar.button("Prihlásiť"):
-        if ADMIN_PASS and pw == ADMIN_PASS:
-            st.session_state.admin_logged = True
-            st.experimental_rerun()
-        else:
-            st.sidebar.error("Nesprávne heslo alebo ADMIN_PASS nie je nastavené.")
-if not st.session_state.admin_logged:
-    st.stop()
-
-# --- Výber týždňa ---
+# --- Výber týždňa a dňa ---
 today = datetime.now(tz).date()
 week_ref = st.sidebar.date_input("Vyber deň v týždni (týždeň začína pondelkom):", value=today)
 monday = week_ref - timedelta(days=week_ref.weekday())
-start_dt = tz.localize(datetime.combine(monday, time(0,0)))
-end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0,0)))
+start_dt = tz.localize(datetime.combine(monday, time(0, 0)))
+end_dt = tz.localize(datetime.combine(monday + timedelta(days=7), time(0, 0)))
 df_week = load_attendance(start_dt, end_dt)
 
-# --- Denný výber ---
 default_day = today if monday <= today <= monday + timedelta(days=6) else monday
-selected_day = st.sidebar.date_input(
-    "Denný prehľad - vyber deň",
-    value=default_day,
-    min_value=monday,
-    max_value=monday + timedelta(days=6)
-)
+selected_day = st.sidebar.date_input("Denný prehľad - vyber deň", value=default_day, min_value=monday, max_value=monday + timedelta(days=6))
 df_day = df_week[df_week["date"] == selected_day] if not df_week.empty else pd.DataFrame()
-if not df_week.empty:
-    summary_day = summarize_day(df_day, selected_day)
 
-# ================== Týždenný prehľad so EXTRA ==================
+# ================== Denný prehľad ==================
+st.header(f"✅ Denný prehľad — {selected_day.strftime('%A %d.%m.%Y')}")
+if not df_day.empty:
+    summary = summarize_day(df_day, selected_day)
+    cols = st.columns(3)
+    day_details_rows = []
+
+    for i, pos in enumerate(POSITIONS):
+        col = cols[i % 3]
+        info = summary[pos]
+        m = info["morning"]
+        p = info["afternoon"]
+
+        col.markdown(f"### **{pos}**")
+        col.markdown(f"**Ranná:** {m['status']} — {m['hours']} h")
+        col.markdown(f"**Poobedná:** {p['status']} — {p['hours']} h")
+
+        if info["details"]:
+            for d in info["details"]:
+                col.error(d)
+
+        day_details_rows.append({
+            "position": pos,
+            "morning_status": m['status'],
+            "morning_hours": m.get('hours', 0),
+            "morning_detail": m.get('detail') or "-",
+            "afternoon_status": p['status'],
+            "afternoon_hours": p.get('hours', 0),
+            "afternoon_detail": p.get('detail') or "-",
+            "total_hours": info['total_hours']
+        })
+    df_day_summary = pd.DataFrame(day_details_rows)
+else:
+    st.warning("Žiadne dáta pre vybraný deň.")
+    df_day_summary = pd.DataFrame()
+
+# ================== Týždenný prehľad ==================
+st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
 days = [monday + timedelta(days=i) for i in range(7)]
 cols_matrix = [d.strftime("%a %d.%m") for d in days]
 matrix = pd.DataFrame(index=POSITIONS, columns=cols_matrix)
@@ -304,29 +219,49 @@ for d in days:
     df_d = df_week[df_week["date"] == d] if not df_week.empty else pd.DataFrame()
     summ = summarize_day(df_d, d)
     for pos in POSITIONS:
-        matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if summ[pos]["total_hours"]>0 else "—"
+        matrix.at[pos, d.strftime("%a %d.%m")] = summ[pos]["total_hours"] if summ[pos]["total_hours"] > 0 else 0
 
-matrix["Spolu"] = matrix.apply(lambda row: sum(x if isinstance(x,(int,float)) else 0 for x in row), axis=1)
+# Pridanie EXTRA1 a EXTRA2 pod Plombovac3 (0 hodín)
+matrix_extra = pd.DataFrame(index=["EXTRA1", "EXTRA2"], columns=matrix.columns)
+matrix_extra = matrix_extra.fillna(0)
+matrix = pd.concat([matrix, matrix_extra])
+matrix["Spolu"] = matrix.sum(axis=1)
 
-# --- PRIDAŤ EXTRA1/EXTRA2 pod Plombovac3 ---
-extra_rows = pd.DataFrame(index=["EXTRA1", "EXTRA2"], columns=matrix.columns)
-for col in matrix.columns:
-    if col != "Spolu":
-        val = matrix.at["Plombovac3", col]
-        extra_rows.at["EXTRA1", col] = val
-        extra_rows.at["EXTRA2", col] = val
-extra_rows["Spolu"] = 0
-matrix = pd.concat([matrix.iloc[:POSITIONS.index("Plombovac3")+1], extra_rows, matrix.iloc[POSITIONS.index("Plombovac3")+1:]])
+st.dataframe(matrix.fillna(0), use_container_width=True)
 
-st.header(f"📅 Týždenný prehľad ({monday.strftime('%d.%m.%Y')} – {(monday + timedelta(days=6)).strftime('%d.%m.%Y')})")
-st.dataframe(matrix.fillna("—"), use_container_width=True)
+# ================== EXPORT DO EXCELU ==================
+def export_excel(df_day_summary, df_week_matrix):
+    wb = Workbook()
+    
+    # Denný prehľad
+    ws1 = wb.active
+    ws1.title = "Denný prehľad"
+    for r in dataframe_to_rows(df_day_summary, index=False, header=True):
+        ws1.append(r)
+    # jednoduché formátovanie
+    for cell in ws1[1]:
+        cell.fill = PatternFill("solid", fgColor="BDD7EE")
+        cell.alignment = Alignment(horizontal="center")
+    
+    # Týždenný prehľad
+    ws2 = wb.create_sheet("Týždenný prehľad")
+    df_week_matrix_reset = df_week_matrix.reset_index().rename(columns={"index": "Pozícia"})
+    for r in dataframe_to_rows(df_week_matrix_reset, index=False, header=True):
+        ws2.append(r)
+    for cell in ws2[1]:
+        cell.fill = PatternFill("solid", fgColor="BDD7EE")
+        cell.alignment = Alignment(horizontal="center")
+    
+    # Export do bytu
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
 
-# --- Export Excel ---
-if st.button("Exportovať Excel"):
-    excel_stream = export_excel(matrix, df_week)
-    st.download_button(
-        label="Stiahnuť XLSX",
-        data=excel_stream,
-        file_name=f"Dochadzka_{monday.strftime('%d%m%Y')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+excel_data = export_excel(df_day_summary, matrix)
+st.download_button(
+    label="⬇️ Export do Excelu",
+    data=excel_data,
+    file_name=f"dochadzka_{monday.strftime('%d%m%Y')}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
