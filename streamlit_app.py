@@ -108,6 +108,7 @@ def classify_pair(pr, od, position):
 
     msgs.append("invalid_times")
     return ("invalid", "invalid", 0.0, 0.0, msgs)
+    
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
     """Zhrnie jednu pozíciu za deň podľa pôvodnej logiky (bez merge intervalov)."""
     morning = {"status": "absent", "hours": 0.0, "detail": None}
@@ -147,18 +148,24 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
     return morning, afternoon, details
 
 
+
 def summarize_day(df_day: pd.DataFrame, target_date: date):
+    """Zhrnie všetky pozície pre daný deň s presným kopírovaním hodín a bez automatického násobenia."""
     results = {}
     for pos in POSITIONS:
         pos_df = df_day[df_day["position"] == pos] if not df_day.empty else pd.DataFrame()
         morning, afternoon, details = summarize_position_day(pos_df, pos)
-        total = morning.get("hours", 0.0) + afternoon.get("hours", 0.0)
+
+        # total_hours = len sme presne sčítali
+        total_hours = round(morning.get("hours", 0.0) + afternoon.get("hours", 0.0), 2)
+
         results[pos] = {
             "morning": morning,
             "afternoon": afternoon,
             "details": details,
-            "total_hours": round(total, 2)
+            "total_hours": total_hours
         }
+
     return results
 
 # ================== STREAMLIT UI ==================
