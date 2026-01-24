@@ -162,28 +162,72 @@ def get_chip_assignments(df_raw: pd.DataFrame, monday):
     return assignments
 
 def excel_with_colors(df_matrix, df_day_details, df_raw, monday):
-    for df in [df_matrix,df_day_details,df_raw]:
-        for col in df.select_dtypes(include=['datetime64[ns, pytz]']).columns:
-            df[col]=df[col].dt.tz_localize(None)
-    wb=Workbook(); ws1=wb.active; ws1.title="Týždenný prehľad"
-    green=PatternFill(start_color="C6EFCE",end_color="C6EFCE",fill_type="solid")
-    yellow=PatternFill(start_color="FFEB9C",end_color="FFEB9C",fill_type="solid")
-    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index":"Pozícia"}),index=False,header=True): ws1.append(r)
-    for row in ws1.iter_rows(min_row=2,min_col=2,max_col=1+len(df_matrix.columns),max_row=1+len(df_matrix)):
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Alignment
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from datetime import timedelta as _tdelta, time as _time
+
+    # --- odstránenie timezone z datetime stĺpcov ---
+    for df in [df_matrix, df_day_details, df_raw]:
+        for col in df.select_dtypes(include=['datetime']).columns:
+            if pd.api.types.is_datetime64tz_dtype(df[col]):
+                df[col] = df[col].dt.tz_convert(None)
+
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Týždenný prehľad"
+    green = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    yellow = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+
+    # === SHEET 1: Týždenný prehľad ===
+    for r in dataframe_to_rows(df_matrix.reset_index().rename(columns={"index": "Pozícia"}), index=False, header=True):
+        ws1.append(r)
+    for row in ws1.iter_rows(min_row=2, min_col=2, max_col=1 + len(df_matrix.columns), max_row=1 + len(df_matrix)):
         for cell in row:
-            val=cell.value
-            if isinstance(val,(int,float)): cell.fill=green
-            elif isinstance(val,str) and val.strip().startswith("⚠"): cell.fill=yellow
-    ws2=wb.create_sheet("Denné - detail"); [ws2.append(r) for r in dataframe_to_rows(df_day_details,index=False,header=True)]
-    ws3=wb.create_sheet("Surové dáta"); [ws3.append(r) for r in dataframe_to_rows(df_raw,index=False,header=True)]
-    ws4=wb.create_sheet("Rozpis čipov"); header=["position","shift"]+[d for d in ["pondelok","utorok","streda","štvrtok","piatok","sobota","nedeľa"]]; ws4.append(header)
-    chip_map=get_chip_assignments(df_raw,monday); POS=sorted(df_raw["position"].unique()) if not df_raw.empty else POSITIONS
+            val = cell.value
+            if isinstance(val, (int, float)):
+                cell.fill = green
+            elif isinstance(val, str) and val.strip().startswith("⚠"):
+                cell.fill = yellow
+
+    # === SHEET 2: Denné - detail ===
+    ws2 = wb.create_sheet("Denné - detail")
+    for r in dataframe_to_rows(df_day_details, index=False, header=True):
+        ws2.append(r)
+
+    # === SHEET 3: Surové dáta ===
+    ws3 = wb.create_sheet("Surové dáta")
+    for r in dataframe_to_rows(df_raw, index=False, header=True):
+        ws3.append(r)
+
+    # === SHEET 4: Rozpis čipov ===
+    ws4 = wb.create_sheet("Rozpis čipov")
+    days = ["pondelok", "utorok", "streda", "štvrtok", "piatok", "sobota", "nedeľa"]
+    header = ["position", "shift"] + days
+    ws4.append(header)
+
+    # --- príprava rozpisu čipov ---
+    chip_map = get_chip_assignments(df_raw, monday)
+    POS = sorted(df_raw["position"].unique()) if not df_raw.empty else POSITIONS
     for pos in POS:
-        for shift in ["06:00-14_00","14:00-22:00"]:
-            ws4.append([pos,shift]+[", ".join(chip_map.get((pos,shift,i),[])) if chip_map.get((pos,shift,i),[]) else "" for i in range(7)])
+        for shift in ["06:00-14_00", "14:00-22:00"]:
+            row_vals = []
+            for i in range(7):
+                users = chip_map.get((pos, shift, i), [])
+                row_vals.append(", ".join(users) if users else "")
+            ws4.append([pos, shift] + row_vals)
+
     for col in ws4.columns:
-        for cell in col: cell.alignment=Alignment(horizontal="center",vertical="center")
-    out=BytesIO(); wb.save(out); out.seek(0); return out
+        for cell in col:
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
 
 # ================== STREAMLIT UI ==================
 st.title("🕓 Admin — Dochádzka (Denný + Týždenný prehľad)")
