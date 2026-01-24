@@ -108,8 +108,8 @@ def classify_pair(pr, od, position):
 
     msgs.append("invalid_times")
     return ("invalid", "invalid", 0.0, 0.0, msgs)
-
 def summarize_position_day(pos_day_df: pd.DataFrame, position):
+    """Zhrnie jednu pozíciu za deň podľa pôvodnej logiky (bez merge intervalov)."""
     morning = {"status": "absent", "hours": 0.0, "detail": None}
     afternoon = {"status": "absent", "hours": 0.0, "detail": None}
     details = []
@@ -119,6 +119,7 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
 
     pairs = get_user_pairs(pos_day_df)
 
+    # preferujeme užívateľa s kompletnou R+P OK
     rp_user = None
     for user, pair in pairs.items():
         role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
@@ -132,6 +133,7 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
         afternoon = {"status": "R+P OK", "hours": h_p, "detail": f"Príchod: {pair['pr']}, Odchod: {pair['od']}"}
         return morning, afternoon, details
 
+    # kontrola jednotlivcov podľa pôvodnej logiky
     for user, pair in pairs.items():
         role_m, role_p, h_m, h_p, msgs = classify_pair(pair["pr"], pair["od"], position)
         if role_m == "Ranna OK" and morning["status"] not in ("Ranna OK", "R+P OK"):
@@ -143,6 +145,7 @@ def summarize_position_day(pos_day_df: pd.DataFrame, position):
                 details.append(f"{user}: {m} — pr:{pair['pr']} od:{pair['od']}")
 
     return morning, afternoon, details
+
 
 def summarize_day(df_day: pd.DataFrame, target_date: date):
     results = {}
