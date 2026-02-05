@@ -573,8 +573,8 @@ for pos in POSITIONS:
                 "first_pr": pair["pr"],
                 "last_od": pair["od"]
             })
-# --- posledných 5 dní (okrem dnes) ---
-start_5d = today - timedelta(days=5)
+# --- posledných 12 dní (okrem dnes) ---
+start_5d = today - timedelta(start=12)
 days_5d = [start_5d + timedelta(days=i) for i in range(5)]
 
 st.subheader("📝 Doplnkové smeny za posledných 5 dní")
