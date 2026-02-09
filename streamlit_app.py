@@ -312,6 +312,18 @@ def save_attendance(user_code, position, action, now=None):
         "valid": True
     }).execute()
     return True
+def update_attendance_record(record_id: int, field: str, new_value: str):
+    """
+    Aktualizuje jeden záznam v attendance podľa ID.
+    field: 'position' alebo 'action'
+    """
+    if field not in ("position", "action"):
+        raise ValueError("Nepodporované pole")
+
+    databaze.table("attendance") \
+        .update({field: new_value}) \
+        .eq("id", record_id) \
+        .execute()
 
 # ================== EXCEL EXPORT (s rozpisom čipov) ==================
 from datetime import timedelta as _tdelta  # lokálna alias
@@ -573,10 +585,52 @@ for pos in POSITIONS:
                 "first_pr": pair["pr"],
                 "last_od": pair["od"]
             })
+
+
+st.divider()
+st.header("🛠️ Manuálna oprava záznamu (podľa ID)")
+
+with st.expander("✏️ Upraviť existujúci záznam"):
+    record_id = st.number_input(
+        "Zadaj ID záznamu (attendance.id)",
+        min_value=1,
+        step=1
+    )
+
+    change_type = st.selectbox(
+        "Čo chceš zmeniť?",
+        ["Pozícia", "Aktivita (Príchod / Odchod)"]
+    )
+
+    if change_type == "Pozícia":
+        new_value = st.selectbox(
+            "Nová pozícia",
+            POSITIONS
+        )
+        field = "position"
+
+    else:
+        new_value = st.selectbox(
+            "Nová aktivita",
+            ["Príchod", "Odchod"]
+        )
+        field = "action"
+
+    if st.button("💾 Uložiť zmenu"):
+        try:
+            update_attendance_record(
+                record_id=int(record_id),
+                field=field,
+                new_value=new_value
+            )
+            st.success(f"Záznam ID {record_id} bol úspešne upravený ✅")
+            st.experimental_rerun()
+        except Exception as e:
+            st.error(f"Chyba pri ukladaní: {e}")
+
 # --- posledných 12 dní (okrem dnes) ---
 start_5d = today - timedelta(days=12)
 days_5d = [start_5d + timedelta(days=i) for i in range(5)]
-
 st.subheader("📝 Doplnkové smeny za posledných 5 dní")
 
 for day in days_5d:
