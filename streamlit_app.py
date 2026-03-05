@@ -33,9 +33,13 @@ databaze: Client = create_client(DATABAZA_URL, DATABAZA_KEY)
 tz = pytz.timezone("Europe/Bratislava")
 
 # ================== KONŠTANTY ==================
+# POSITIONS = [
+#     "Veliteľ", "CCTV", "Brány", "Sklad2", "Sklad3",
+#     "Turniket2", "Turniket3", "Plombovac2", "Plombovac3"
+# ]
 POSITIONS = [
-    "Veliteľ", "CCTV", "Brány", "Sklad2", "Sklad3",
-    "Turniket2", "Turniket3", "Plombovac2", "Plombovac3"
+    "Veliteľ", "Plombovac", "Kontrolor_DC3", "Kontrolor_DC2", "Mobilny_SBS",
+    "EXTRA"
 ]
 SHIFT_HOURS = 7.5
 DOUBLE_SHIFT_HOURS = 15.25
