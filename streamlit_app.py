@@ -38,8 +38,7 @@ tz = pytz.timezone("Europe/Bratislava")
 #     "Turniket2", "Turniket3", "Plombovac2", "Plombovac3"
 # ]
 POSITIONS = [
-    "Veliteľ", "Plombovac", "Kontrolor_DC3", "Kontrolor_DC2", "Mobilny_SBS",
-    "EXTRA"
+    "Veliteľ", "Plombovac", "Kontrolor_DC3", "Kontrolor_DC2", "Mobilny_SBS"
 ]
 SHIFT_HOURS = 7.5
 DOUBLE_SHIFT_HOURS = 15.25
