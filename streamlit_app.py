@@ -633,9 +633,9 @@ with st.expander("✏️ Upraviť existujúci záznam"):
             st.error(f"Chyba pri ukladaní: {e}")
 
 # --- posledných 12 dní (okrem dnes) ---
-start_5d = today - timedelta(days=12)
+start_5d = today - timedelta(days=4)
 days_5d = [start_5d + timedelta(days=i) for i in range(5)]
-st.subheader("📝 Doplnkové smeny za posledných 5 dní")
+st.subheader("📝 Doplnkové smeny za posledné 4 dní")
 
 for day in days_5d:
     st.markdown(f"### 📅 {day.strftime('%A %d.%m.%Y')}")
